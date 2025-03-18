@@ -1,0 +1,151 @@
+import React, { useState } from "react";
+import { Link } from "react-router-dom";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { Wallet, Home, FileText, PenSquare, Menu, X } from "lucide-react";
+
+interface HeaderProps {
+  isWalletConnected?: boolean;
+  walletAddress?: string;
+  walletBalance?: number;
+  onConnectWallet?: () => void;
+  onDisconnectWallet?: () => void;
+}
+
+const Header = ({
+  isWalletConnected = false,
+  walletAddress = "0x1234...5678",
+  walletBalance = 1250.75,
+  onConnectWallet = () => console.log("Connect wallet clicked"),
+  onDisconnectWallet = () => console.log("Disconnect wallet clicked"),
+}: HeaderProps) => {
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  const toggleMobileMenu = () => {
+    setIsMobileMenuOpen(!isMobileMenuOpen);
+  };
+
+  const navItems = [
+    { name: "Home", path: "/", icon: <Home className="h-4 w-4 mr-2" /> },
+    {
+      name: "Proposals",
+      path: "/proposals",
+      icon: <FileText className="h-4 w-4 mr-2" />,
+    },
+    {
+      name: "Create Proposal",
+      path: "/create-proposal",
+      icon: <PenSquare className="h-4 w-4 mr-2" />,
+    },
+  ];
+
+  return (
+    <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <div className="container flex h-20 max-w-screen-2xl items-center">
+        {/* Logo */}
+        <Link to="/" className="mr-6 flex items-center space-x-2">
+          <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
+            <span className="text-primary-foreground font-bold">K</span>
+          </div>
+          <span className="font-bold text-xl hidden sm:inline-block">
+            KalyChain DAO
+          </span>
+        </Link>
+
+        {/* Desktop Navigation */}
+        <nav className="hidden md:flex items-center space-x-4 lg:space-x-6 mx-6">
+          {navItems.map((item) => (
+            <Link
+              key={item.name}
+              to={item.path}
+              className="flex items-center text-sm font-medium transition-colors hover:text-primary"
+            >
+              {item.icon}
+              {item.name}
+            </Link>
+          ))}
+        </nav>
+
+        {/* Mobile Menu Button */}
+        <button
+          onClick={toggleMobileMenu}
+          className="md:hidden ml-auto mr-4"
+          aria-label="Toggle Menu"
+        >
+          {isMobileMenuOpen ? (
+            <X className="h-6 w-6" />
+          ) : (
+            <Menu className="h-6 w-6" />
+          )}
+        </button>
+
+        {/* Wallet Connect Button */}
+        <div className="ml-auto md:ml-0">
+          {isWalletConnected ? (
+            <div className="flex items-center gap-4">
+              <div className="hidden sm:flex flex-col items-end">
+                <span className="text-sm font-medium">
+                  {walletBalance.toFixed(2)} KLC
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {walletAddress}
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onDisconnectWallet}
+                className="flex items-center gap-2"
+              >
+                <Wallet className="h-4 w-4" />
+                <span className="hidden sm:inline">Disconnect</span>
+              </Button>
+            </div>
+          ) : (
+            <Button
+              onClick={onConnectWallet}
+              className="flex items-center gap-2"
+              size="sm"
+            >
+              <Wallet className="h-4 w-4" />
+              <span>Connect Wallet</span>
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Mobile Navigation Menu */}
+      {isMobileMenuOpen && (
+        <div className="md:hidden border-t border-border/40 bg-background">
+          <div className="container py-4 space-y-3">
+            {navItems.map((item) => (
+              <Link
+                key={item.name}
+                to={item.path}
+                className="flex items-center py-2 text-sm font-medium transition-colors hover:text-primary"
+                onClick={() => setIsMobileMenuOpen(false)}
+              >
+                {item.icon}
+                {item.name}
+              </Link>
+            ))}
+            {isWalletConnected && (
+              <div className="pt-2 border-t border-border/40 mt-2">
+                <div className="flex flex-col gap-1 py-2">
+                  <span className="text-sm font-medium">
+                    {walletBalance.toFixed(2)} KLC
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {walletAddress}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </header>
+  );
+};
+
+export default Header;
