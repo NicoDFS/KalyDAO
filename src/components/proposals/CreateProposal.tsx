@@ -1,9 +1,20 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
-import { AlertCircle, Info } from "lucide-react";
+import { AlertCircle, Info, ExternalLink } from "lucide-react";
+import { 
+  useAccount, 
+  useBalance,
+  useChainId,
+  useWriteContract,
+  type BaseError
+} from 'wagmi';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { CONTRACT_ADDRESSES_BY_NETWORK } from '@/blockchain/contracts/addresses';
+import { kalyChainMainnet, kalyChainTestnet } from '@/blockchain/config/chains';
+import { parseEther } from 'viem';
 
 import { Button } from "@/components/ui/button";
 import {
@@ -41,8 +52,6 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface CreateProposalProps {
-  isWalletConnected?: boolean;
-  userVotingPower?: number;
   minProposalThreshold?: number;
 }
 
@@ -74,13 +83,47 @@ const formSchema = z.object({
   }),
 });
 
+const governorABI = [
+  {
+    name: 'propose',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'targets', type: 'address[]' },
+      { name: 'values', type: 'uint256[]' },
+      { name: 'calldatas', type: 'bytes[]' },
+      { name: 'description', type: 'string' }
+    ],
+    outputs: [{ type: 'uint256' }]
+  }
+] as const;
+
 const CreateProposal = ({
-  isWalletConnected = false,
-  userVotingPower = 25000,
   minProposalThreshold = 50000,
 }: CreateProposalProps) => {
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const { address, isConnected } = useAccount();
+  const chainId = useChainId();
+  
+  // Get the correct token address based on current network
+  const governanceTokenAddress = chainId === 3389 
+    ? CONTRACT_ADDRESSES_BY_NETWORK.testnet.GOVERNANCE_TOKEN
+    : CONTRACT_ADDRESSES_BY_NETWORK.mainnet.GOVERNANCE_TOKEN;
+
+  const { data: balance } = useBalance({
+    address,
+    token: governanceTokenAddress,
+  });
+
+  const userVotingPower = Number(balance?.formatted || 0);
+
+  // Get the correct DAO contract address based on current network
+  const governorAddress = chainId === 3389
+    ? CONTRACT_ADDRESSES_BY_NETWORK.testnet.GOVERNOR_CONTRACT
+    : CONTRACT_ADDRESSES_BY_NETWORK.mainnet.GOVERNOR_CONTRACT;
+
+  const { writeContract: propose, isPending: isProposalCreating } = useWriteContract();
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -93,17 +136,54 @@ const CreateProposal = ({
     },
   });
 
+  const getVotingPeriodInSeconds = (period: string): number => {
+    const days = {
+      '3days': 3,
+      '5days': 5,
+      '7days': 7,
+      '14days': 14
+    }[period] || 3;
+    
+    return days * 24 * 60 * 60; // Convert days to seconds
+  };
+
   const onSubmit = async (values: z.infer<typeof formSchema>) => {
+    if (!propose || !address) {
+      console.error('Contract write not ready or wallet not connected');
+      return;
+    }
+
     setIsSubmitting(true);
+    try {
+      // Combine summary and description for on-chain storage
+      const fullDescription = `# Title: ${values.title}\n\n# Summary\n${values.summary}\n\n# Description\n${values.description}\n\n# Category\n${values.category}\n\n# Voting Period\n${values.votingPeriod}`;
+      
+      // For this example, we'll create an empty proposal
+      // In a real implementation, you would include the actual proposal targets, values, and calldatas
+      await propose({
+        address: governorAddress,
+        abi: governorABI,
+        functionName: 'propose',
+        args: [
+          [], // targets
+          [], // values
+          [], // calldatas
+          fullDescription // description
+        ],
+        chain: chainId === 3389 ? kalyChainTestnet : kalyChainMainnet,
+        account: address
+      });
 
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-
-    console.log(values);
-    setIsSubmitting(false);
-
-    // Navigate to proposals page after submission
-    navigate("/proposals");
+      // Navigate to proposals page after submission
+      navigate("/proposals");
+    } catch (error) {
+      console.error('Error creating proposal:', error);
+      const baseError = error as BaseError;
+      // You might want to show an error message to the user here
+      console.error('Error details:', baseError.message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const hasEnoughVotingPower = userVotingPower >= minProposalThreshold;
@@ -116,12 +196,17 @@ const CreateProposal = ({
         </h1>
         <p className="text-gray-600 mt-2">
           Submit a proposal for the KalyChain DAO to vote on. Proposals require
-          a minimum of {minProposalThreshold.toLocaleString()} KLC voting power
+          a minimum of {minProposalThreshold.toLocaleString()} gKLC (Governance KLC) voting power
           to create.
         </p>
+        {chainId && (
+          <p className="text-sm text-gray-500 mt-1">
+            Network: {chainId === 3389 ? 'Testnet' : 'Mainnet'} | Your voting power: {userVotingPower.toLocaleString()} gKLC
+          </p>
+        )}
       </div>
 
-      {!isWalletConnected ? (
+      {!isConnected ? (
         <Card>
           <CardContent className="pt-6">
             <div className="flex flex-col items-center justify-center py-6 text-center">
@@ -132,20 +217,44 @@ const CreateProposal = ({
               <p className="text-gray-500 mt-2 mb-4">
                 You need to connect your wallet to create a proposal
               </p>
-              <Button>Connect Wallet</Button>
+              <ConnectButton />
             </div>
           </CardContent>
         </Card>
       ) : !hasEnoughVotingPower ? (
-        <Alert variant="destructive" className="mb-6">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Insufficient Voting Power</AlertTitle>
-          <AlertDescription>
-            You need at least {minProposalThreshold.toLocaleString()} KLC voting
-            power to create a proposal. You currently have{" "}
-            {userVotingPower.toLocaleString()} KLC.
-          </AlertDescription>
-        </Alert>
+        <div className="space-y-4">
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Insufficient Voting Power</AlertTitle>
+            <AlertDescription>
+              You need at least {minProposalThreshold.toLocaleString()} gKLC voting
+              power to create a proposal. You currently have{" "}
+              {userVotingPower.toLocaleString()} gKLC.
+            </AlertDescription>
+          </Alert>
+          
+          <Card>
+            <CardHeader>
+              <CardTitle>Need Voting Power?</CardTitle>
+              <CardDescription>
+                To participate in governance, you need to wrap your KLC tokens to gKLC
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-gray-600 mb-4">
+                gKLC (Governance KLC) is the governance token that gives you voting power in the DAO.
+                You can wrap your KLC tokens to gKLC and unwrap them back at any time.
+              </p>
+              <Link 
+                to="/wrap"
+                className="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2"
+              >
+                Wrap KLC to gKLC
+                <ExternalLink className="ml-2 h-4 w-4" />
+              </Link>
+            </CardContent>
+          </Card>
+        </div>
       ) : (
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
@@ -319,8 +428,11 @@ const CreateProposal = ({
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={isSubmitting}>
-                  {isSubmitting ? "Submitting..." : "Submit Proposal"}
+                <Button 
+                  type="submit" 
+                  disabled={isSubmitting || isProposalCreating}
+                >
+                  {isSubmitting || isProposalCreating ? "Creating Proposal..." : "Submit Proposal"}
                 </Button>
               </CardFooter>
             </Card>

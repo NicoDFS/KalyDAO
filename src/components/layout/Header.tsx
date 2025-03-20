@@ -2,23 +2,10 @@ import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Wallet, Home, FileText, PenSquare, Menu, X } from "lucide-react";
+import { Home, FileText, PenSquare, Menu, X } from "lucide-react";
+import { ConnectButton } from '@rainbow-me/rainbowkit';
 
-interface HeaderProps {
-  isWalletConnected?: boolean;
-  walletAddress?: string;
-  walletBalance?: number;
-  onConnectWallet?: () => void;
-  onDisconnectWallet?: () => void;
-}
-
-const Header = ({
-  isWalletConnected = false,
-  walletAddress = "0x1234...5678",
-  walletBalance = 1250.75,
-  onConnectWallet = () => console.log("Connect wallet clicked"),
-  onDisconnectWallet = () => console.log("Disconnect wallet clicked"),
-}: HeaderProps) => {
+const Header = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const toggleMobileMenu = () => {
@@ -79,38 +66,9 @@ const Header = ({
           )}
         </button>
 
-        {/* Wallet Connect Button */}
+        {/* RainbowKit Connect Button */}
         <div className="ml-auto md:ml-0">
-          {isWalletConnected ? (
-            <div className="flex items-center gap-4">
-              <div className="hidden sm:flex flex-col items-end">
-                <span className="text-sm font-medium">
-                  {walletBalance.toFixed(2)} KLC
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {walletAddress}
-                </span>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onDisconnectWallet}
-                className="flex items-center gap-2"
-              >
-                <Wallet className="h-4 w-4" />
-                <span className="hidden sm:inline">Disconnect</span>
-              </Button>
-            </div>
-          ) : (
-            <Button
-              onClick={onConnectWallet}
-              className="flex items-center gap-2"
-              size="sm"
-            >
-              <Wallet className="h-4 w-4" />
-              <span>Connect Wallet</span>
-            </Button>
-          )}
+          <ConnectButton />
         </div>
       </div>
 
@@ -129,18 +87,6 @@ const Header = ({
                 {item.name}
               </Link>
             ))}
-            {isWalletConnected && (
-              <div className="pt-2 border-t border-border/40 mt-2">
-                <div className="flex flex-col gap-1 py-2">
-                  <span className="text-sm font-medium">
-                    {walletBalance.toFixed(2)} KLC
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {walletAddress}
-                  </span>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       )}

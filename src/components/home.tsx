@@ -5,6 +5,7 @@ import { Button } from "./ui/button";
 import DaoOverview from "./home/DaoOverview";
 import TokenInfo from "./home/TokenInfo";
 import ActiveProposalsList from "./proposals/ActiveProposalsList";
+import { ConnectButton } from '@rainbow-me/rainbowkit';
 
 const Home = () => {
   return (
@@ -21,10 +22,7 @@ const Home = () => {
             of KalyChain.
           </p>
           <div className="flex flex-wrap justify-center gap-4">
-            <Button size="lg" className="gap-2">
-              Connect Wallet
-              <ArrowRight className="h-4 w-4" />
-            </Button>
+            <ConnectButton />
             <Link to="/proposals">
               <Button variant="outline" size="lg">
                 View Proposals
@@ -58,7 +56,7 @@ const Home = () => {
             Your KLC tokens represent your voting power in the DAO.
           </p>
           <div className="flex flex-wrap justify-center gap-4">
-            <Button size="lg">Connect Wallet</Button>
+            <ConnectButton />
             <Link to="/proposals/create">
               <Button variant="outline" size="lg">
                 Create Proposal

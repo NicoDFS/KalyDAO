@@ -9,6 +9,9 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useAccount, useBalance } from 'wagmi';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { CONTRACT_ADDRESSES_BY_NETWORK } from '@/blockchain/contracts/addresses';
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,18 +29,24 @@ import {
 } from "@/components/ui/alert-dialog";
 
 interface ProposalDetailProps {
-  isWalletConnected?: boolean;
-  userVotingPower?: number;
+  minProposalThreshold?: number;
 }
 
 const ProposalDetail = ({
-  isWalletConnected = false,
-  userVotingPower = 25000,
+  minProposalThreshold = 50000,
 }: ProposalDetailProps) => {
   const { id } = useParams<{ id: string }>();
   const [userVote, setUserVote] = useState<"for" | "against" | null>(null);
   const [showVoteDialog, setShowVoteDialog] = useState(false);
   const [voteDirection, setVoteDirection] = useState<"for" | "against">("for");
+  
+  const { address, isConnected } = useAccount();
+  const { data: balance } = useBalance({
+    address,
+    token: CONTRACT_ADDRESSES_BY_NETWORK.mainnet.GOVERNANCE_TOKEN,
+  });
+
+  const userVotingPower = Number(balance?.formatted || 0);
 
   // Mock proposal data - in a real app, you would fetch this based on the ID
   const proposal = {
@@ -213,7 +222,7 @@ const ProposalDetail = ({
             {/* Voting buttons */}
             {proposal.status === "active" && (
               <div className="pt-4">
-                {isWalletConnected ? (
+                {isConnected ? (
                   userVote ? (
                     <div className="bg-gray-50 p-4 rounded-md">
                       <p className="text-sm text-gray-600">
@@ -246,9 +255,7 @@ const ProposalDetail = ({
                     <p className="text-sm text-gray-600 mb-2">
                       Connect your wallet to vote on this proposal
                     </p>
-                    <Button variant="outline" size="sm">
-                      Connect Wallet
-                    </Button>
+                    <ConnectButton />
                   </div>
                 )}
               </div>
@@ -285,7 +292,7 @@ const ProposalDetail = ({
                 <p className="text-sm">{discussion.content}</p>
               </div>
             ))}
-            {isWalletConnected ? (
+            {isConnected ? (
               <div className="pt-4">
                 <textarea
                   className="w-full p-3 border border-gray-300 rounded-md text-sm"
@@ -301,9 +308,7 @@ const ProposalDetail = ({
                 <p className="text-sm text-gray-600 mb-2">
                   Connect your wallet to join the discussion
                 </p>
-                <Button variant="outline" size="sm">
-                  Connect Wallet
-                </Button>
+                <ConnectButton />
               </div>
             )}
           </div>
