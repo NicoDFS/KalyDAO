@@ -47,6 +47,7 @@ const governanceTokenABI = [
 
 const WrapKLC = () => {
   const [amount, setAmount] = useState('');
+  const [activeTab, setActiveTab] = useState<"deposit" | "withdraw">("deposit");
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { address, isConnected } = useAccount();
@@ -165,6 +166,21 @@ const WrapKLC = () => {
     }
   };
 
+  // Function to handle max button click
+  const handleMaxClick = () => {
+    if (activeTab === 'deposit') {
+      // For deposits, use the KLC balance minus a small amount for gas
+      const maxAmount = klcBalance?.value ? 
+        formatEther(klcBalance.value - parseEther('0.01')) : '0';
+      setAmount(maxAmount);
+    } else {
+      // For withdraws, use the entire gKLC balance
+      const maxAmount = gklcBalance?.value ? 
+        formatEther(gklcBalance.value) : '0';
+      setAmount(maxAmount);
+    }
+  };
+
   if (!isConnected) {
     return (
       <div className="container max-w-2xl mx-auto p-6">
@@ -214,20 +230,38 @@ const WrapKLC = () => {
               </div>
             </div>
 
-            <Tabs defaultValue="wrap">
+            <Tabs defaultValue="deposit" onValueChange={(value) => setActiveTab(value as "deposit" | "withdraw")}>
               <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="wrap">Deposit KLC</TabsTrigger>
-                <TabsTrigger value="unwrap">Withdraw gKLC</TabsTrigger>
+                <TabsTrigger value="deposit">Deposit</TabsTrigger>
+                <TabsTrigger value="withdraw">Withdraw</TabsTrigger>
               </TabsList>
 
-              <TabsContent value="wrap" className="space-y-4">
+              <TabsContent value="deposit" className="space-y-4">
                 <div className="space-y-2">
-                  <Input
-                    type="number"
-                    placeholder="Amount of KLC to deposit"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                  />
+                  <div className="relative">
+                    <Input
+                      type="text"
+                      pattern="^[0-9]*[.,]?[0-9]*$"
+                      placeholder="Enter amount"
+                      value={amount}
+                      onChange={(e) => {
+                        // Only allow numbers and decimals
+                        if (/^[0-9]*[.,]?[0-9]*$/.test(e.target.value)) {
+                          setAmount(e.target.value);
+                        }
+                      }}
+                      className="pr-16" // Add padding for the max button
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 h-7 px-2"
+                      onClick={handleMaxClick}
+                    >
+                      MAX
+                    </Button>
+                  </div>
                   <Button 
                     className="w-full" 
                     onClick={handleWrap}
@@ -241,14 +275,32 @@ const WrapKLC = () => {
                 </p>
               </TabsContent>
 
-              <TabsContent value="unwrap" className="space-y-4">
+              <TabsContent value="withdraw" className="space-y-4">
                 <div className="space-y-2">
-                  <Input
-                    type="number"
-                    placeholder="Amount of gKLC to withdraw"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                  />
+                  <div className="relative">
+                    <Input
+                      type="text"
+                      pattern="^[0-9]*[.,]?[0-9]*$"
+                      placeholder="Enter amount"
+                      value={amount}
+                      onChange={(e) => {
+                        // Only allow numbers and decimals
+                        if (/^[0-9]*[.,]?[0-9]*$/.test(e.target.value)) {
+                          setAmount(e.target.value);
+                        }
+                      }}
+                      className="pr-16" // Add padding for the max button
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 h-7 px-2"
+                      onClick={handleMaxClick}
+                    >
+                      MAX
+                    </Button>
+                  </div>
                   <Button 
                     className="w-full" 
                     onClick={handleUnwrap}
