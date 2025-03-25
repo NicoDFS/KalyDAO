@@ -22,6 +22,7 @@ import { supabase } from '@/lib/supabase';
 import { useDao } from '@/blockchain/hooks/useDao';
 import { toast } from "@/components/ui/use-toast";
 import { ethers } from 'ethers';
+
 // UI Components
 import { Button } from "@/components/ui/button";
 import {
@@ -91,7 +92,7 @@ const CreateProposal = ({
   minProposalThreshold = 50000,
 }: CreateProposalProps) => {
   const navigate = useNavigate();
-  // Using toast imported from "@/components/ui/use-toast"
+  const toast = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { address, isConnected } = useAccount();
@@ -131,349 +132,18 @@ const CreateProposal = ({
     ? CONTRACT_ADDRESSES_BY_NETWORK.testnet.GOVERNOR_CONTRACT
     : CONTRACT_ADDRESSES_BY_NETWORK.mainnet.GOVERNOR_CONTRACT;
 
-  const { data: hash, writeContract, isPending } = useWriteContract();
+  const { data: hash, writeContract } = useWriteContract();
   
   useEffect(() => {
     if (hash) {
       setTxHash(hash);
       console.log('Transaction hash set:', hash);
-      
-      // When we have a hash, we can wait for the transaction receipt
-      const processTransaction = async () => {
-        try {
-          // Using ethers to wait for the transaction
-          const provider = new ethers.providers.Web3Provider(window.ethereum as any);
-          console.log('Waiting for transaction confirmation...');
-          const receipt = await provider.waitForTransaction(hash);
-          console.log('Transaction confirmed!', receipt);
-          
-          const proposalId = await processTransactionReceipt(receipt);
-          
-          if (proposalId) {
-            console.log('Proposal created successfully with ID:', proposalId);
-            
-            // Get proposal data from blockchain before saving to Supabase
-            try {
-              const onChainData = await getProposalFromBlockchain(proposalId);
-              console.log('Retrieved on-chain data:', onChainData);
-              
-              // Add UI-specific data from form
-              const formValues = form.getValues();
-              
-              // Create proposal data object
-              // Convert numeric state to appropriate format based on schema
-              const stateValue = onChainData.state.toString();
-              
-              // Map numeric state to string state for better compatibility
-              // 0 = Pending, 1 = Active, 2 = Canceled, 3 = Defeated, 4 = Succeeded, 5 = Queued, 6 = Expired, 7 = Executed
-              const stateMap: Record<string, string> = {
-                '0': 'Pending',
-                '1': 'Active',
-                '2': 'Canceled',
-                '3': 'Defeated', 
-                '4': 'Succeeded',
-                '5': 'Queued',
-                '6': 'Expired',
-                '7': 'Executed'
-              };
-              
-              const completeData = {
-                proposal_id: proposalId,
-                title: formValues.title,
-                description: formValues.description,
-                summary: formValues.summary || '',
-                proposer_address: onChainData.proposer,
-                created_by: address || '',
-                chain_id: chainId,
-                state: stateMap[stateValue] || 'Pending', // Use string state value
-                votes_for: 0,
-                votes_against: 0,
-                votes_abstain: 0,
-                category: formValues.category || '',
-                tags: []
-              };
-              
-              // Save the complete data to Supabase
-              const saveResult = await saveToSupabase(completeData);
-              
-              if (saveResult) {
-                toast({
-                  title: 'Proposal Created',
-                  description: 'Your proposal has been created successfully!',
-                  variant: 'default',
-                });
-              } else {
-                console.warn('Transaction succeeded but saving to database failed.');
-                toast({
-                  title: 'Transaction Succeeded',
-                  description: 'Your proposal was created, but we could not save details to the database. Please check the Proposals page.',
-                  variant: 'default',
-                });
-                
-                // Navigate to proposals list as fallback
-                setTimeout(() => {
-                  navigate('/proposals');
-                }, 1000);
-              }
-            } catch (err) {
-              console.error('Error getting on-chain data or saving to Supabase:', err);
-              toast({
-                title: 'Error',
-                description: 'Your proposal was created on-chain, but we could not save the details to our database.',
-                variant: 'destructive',
-              });
-              
-              // Navigate to proposals list as fallback
-              setTimeout(() => {
-                navigate('/proposals');
-              }, 1000);
-            }
-          } else {
-            console.warn('Transaction succeeded but proposal ID could not be extracted.');
-            toast({
-              title: 'Transaction Succeeded',
-              description: 'Your proposal was created, but we could not extract the proposal ID. Please check the Proposals page.',
-              variant: 'default',
-            });
-            
-            // Navigate to proposals list as fallback
-            setTimeout(() => {
-              navigate('/proposals');
-            }, 1000);
-          }
-        } catch (err) {
-          console.error('Error processing transaction:', err);
-          setError(err instanceof Error ? err.message : 'Unknown error processing transaction');
-          toast({
-            title: 'Transaction Failed',
-            description: err instanceof Error ? err.message : 'Unknown error processing transaction',
-            variant: 'destructive',
-          });
-        } finally {
-          setIsSubmitting(false);
-        }
-      };
-      
-      processTransaction();
     }
   }, [hash]);
-
-  // Function to query proposal data directly from the blockchain
-  const getProposalFromBlockchain = async (proposalId: string) => {
-    try {
-      console.log('Getting on-chain data for proposal:', proposalId);
-      
-      // Create provider and contract instances
-      const provider = new ethers.providers.Web3Provider(window.ethereum as any);
-      
-      // Get governor contract instance
-      const governorContract = new ethers.Contract(
-        governorAddress,
-        [
-          {
-            name: 'proposalProposer',
-            type: 'function',
-            stateMutability: 'view',
-            inputs: [{ name: 'proposalId', type: 'uint256' }],
-            outputs: [{ name: '', type: 'address' }]
-          },
-          {
-            name: 'state',
-            type: 'function',
-            stateMutability: 'view',
-            inputs: [{ name: 'proposalId', type: 'uint256' }],
-            outputs: [{ name: '', type: 'uint8' }]
-          }
-        ],
-        provider
-      );
-      
-      console.log('Querying governor contract at:', governorAddress);
-      
-      // Get proposer address
-      const proposer = await governorContract.proposalProposer(proposalId);
-      console.log('Proposal proposer:', proposer);
-      
-      // Get proposal state
-      const state = await governorContract.state(proposalId);
-      console.log('Proposal state:', state);
-      
-      return {
-        proposer,
-        state
-      };
-    } catch (error) {
-      console.error('Error querying blockchain for proposal data:', error);
-      // If we can't get on-chain data, return fallback data
-      return {
-        proposer: address || '0x0000000000000000000000000000000000000000',
-        state: 0
-      };
-    }
-  };
-
-  const processTransactionReceipt = async (receipt: any) => {
-    console.log('Receipt logs:', JSON.stringify(receipt.logs, null, 2));
-    
-    // Ensure we have logs
-    if (!receipt.logs || receipt.logs.length === 0) {
-      console.error('No logs found in transaction receipt');
-      return null;
-    }
-    
-    // Log all event topics for debugging
-    receipt.logs.forEach((log: any, index: number) => {
-      console.log(`Log ${index} topics:`, log.topics);
-      console.log(`Log ${index} address:`, log.address);
-      console.log(`Log ${index} full log:`, JSON.stringify(log, null, 2));
-    });
-    
-    // From your logs, we can see that the event has a signature topic and then the data contains the proposal ID
-    // The ProposalCreated event is from the governor contract
-    const governorLog = receipt.logs.find((log: any) => 
-      log.address?.toLowerCase() === governorAddress.toLowerCase()
-    );
-    
-    if (governorLog) {
-      console.log('Found governor contract log:', governorLog);
-      
-      // For Governor contracts, the proposal ID is often the first parameter in the data field
-      // The data field is a hex string that needs to be decoded
-      try {
-        // Extract the first 32 bytes (64 hex chars + '0x' prefix) from the data field
-        // This is likely the proposal ID
-        const data = governorLog.data;
-        console.log('Event data:', data);
-        
-        if (data && data.length >= 66) {
-          // The first 32 bytes after the '0x' prefix
-          const proposalIdHex = '0x' + data.slice(2, 66);
-          console.log('Extracted potential proposal ID hex:', proposalIdHex);
-          
-          // Convert to decimal for display and database consistency
-          const proposalIdDecimal = BigInt(proposalIdHex).toString();
-          console.log('Proposal ID in decimal:', proposalIdDecimal);
-          
-          // Store both formats for debugging
-          localStorage.setItem('lastProposalIdHex', proposalIdHex);
-          localStorage.setItem('lastProposalIdDecimal', proposalIdDecimal);
-          
-          // Set the proposal ID in state for navigation
-          setProposalId(proposalIdDecimal);
-          
-          return proposalIdDecimal;
-        }
-      } catch (error) {
-        console.error('Error extracting proposal ID from event data:', error);
-      }
-    }
-    
-    console.warn('Could not find proposal ID in event data, checking transaction hash...');
-    
-    // As a fallback, use the transaction hash as a unique identifier
-    if (receipt.transactionHash) {
-      const txHash = receipt.transactionHash;
-      console.log('Using transaction hash as fallback identifier:', txHash);
-      
-      // Create a numeric-like ID from the transaction hash
-      // Take last 16 chars of the hash and convert to a decimal string
-      const txIdHex = '0x' + txHash.slice(-16);
-      const txIdDecimal = BigInt(txIdHex).toString();
-      
-      console.log('Generated proposal ID from tx hash:', txIdDecimal);
-      
-      // Store both formats
-      localStorage.setItem('lastProposalIdHex', txIdHex);
-      localStorage.setItem('lastProposalIdDecimal', txIdDecimal);
-      
-      // Set the proposal ID in state for navigation
-      setProposalId(txIdDecimal);
-      
-      return txIdDecimal;
-    }
-    
-    console.error('Could not extract proposal ID from transaction logs');
-    return null;
-  };
   
-  const saveToSupabase = async (proposalData: any) => {
-    try {
-      console.log('Saving proposal to Supabase:', proposalData);
-      
-      // Try insert
-      try {
-        const { data: insertData, error: insertError } = await supabase
-          .from('proposals')
-          .insert(proposalData)
-          .select();
-          
-        if (insertError) {
-          console.error('Error inserting proposal:', insertError);
-          
-          // Check specific error cases
-          if (insertError.code === '42P01') { // undefined_table
-            const errorMessage = 'The proposals table does not exist in your Supabase database.';
-            console.error(errorMessage);
-            setError(errorMessage);
-            return false;
-          }
-          
-          // Row-level security permission errors
-          if (insertError.code === '42501') { // permission_denied
-            const errorMessage = 'Permission denied: Your anonymous user lacks access to the proposals table.';
-            console.error(errorMessage);
-            setError(errorMessage);
-            return false;
-          }
-          
-          // If unique constraint violation, try update
-          if (insertError.code === '23505') {
-            console.log('Proposal already exists, attempting update');
-            
-            const { data: updateData, error: updateError } = await supabase
-              .from('proposals')
-              .update(proposalData)
-              .eq('proposal_id', proposalData.proposal_id)
-              .select();
-              
-            if (updateError) {
-              console.error('Update also failed:', updateError);
-              setError(`Failed to update proposal: ${updateError.message}`);
-              return false;
-            }
-            
-            console.log('Successfully updated proposal:', updateData);
-          } else {
-            const errorMessage = `Failed to save proposal: ${insertError.message}`;
-            setError(errorMessage);
-            return false;
-          }
-        } else {
-          console.log('Successfully inserted proposal:', insertData);
-        }
-        
-        // Navigate to proposal details page
-        const proposalDetailsUrl = `/proposals/${proposalData.proposal_id}`;
-        console.log('Navigating to:', proposalDetailsUrl);
-        
-        setTimeout(() => {
-          navigate(proposalDetailsUrl);
-        }, 1500);
-        
-        return true;
-      } catch (innerErr) {
-        console.error('Database operation error:', innerErr);
-        const errorMessage = `Database error: ${innerErr instanceof Error ? innerErr.message : 'Unknown error'}`;
-        setError(errorMessage);
-        return false;
-      }
-    } catch (err) {
-      console.error('Unexpected error in saveToSupabase:', err);
-      const errorMessage = `Error: ${err instanceof Error ? err.message : 'Unknown error'}`;
-      setError(errorMessage);
-      return false;
-    }
-  };
+  const { data: receipt, isLoading: isConfirming } = useTransaction({
+    hash: txHash,
+  });
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -489,6 +159,114 @@ const CreateProposal = ({
       calldatas: ""
     }
   });
+
+  const processTransactionReceipt = async (receipt: any) => {
+    console.log('Transaction confirmed!', receipt);
+    console.log('Transaction hash:', receipt.transactionHash);
+    console.log('Receipt logs:', receipt.logs);
+    
+    // Ensure we have logs
+    if (!receipt.logs || receipt.logs.length === 0) {
+      console.error('No logs found in transaction receipt');
+      return null;
+    }
+    
+    // Log all event topics for debugging
+    receipt.logs.forEach((log: any, index: number) => {
+      console.log(`Log ${index} topics:`, log.topics);
+      console.log(`Log ${index} address:`, log.address);
+    });
+    
+    // Try to find the ProposalCreated event
+    const proposalCreatedLog = receipt.logs.find((log: any) => 
+      // Check if this log is from our governor contract
+      log.address?.toLowerCase() === governorAddress.toLowerCase() && 
+      // Check if it has enough topics
+      log.topics?.length > 1
+    );
+    
+    if (proposalCreatedLog) {
+      console.log('Found potential ProposalCreated event:', proposalCreatedLog);
+      // The proposal ID should be in the first topic after the event signature
+      const proposalId = proposalCreatedLog.topics[1];
+      console.log('Extracted proposal ID from event:', proposalId);
+      
+      // Convert to decimal for display and database consistency
+      const proposalIdDecimal = BigInt(proposalId).toString();
+      console.log('Proposal ID in decimal:', proposalIdDecimal);
+      
+      await saveToSupabase(proposalIdDecimal);
+      
+      return proposalIdDecimal;
+    } else {
+      console.warn('Could not find ProposalCreated event, trying to extract from any log');
+      
+      // Fallback: try to extract from any log that might contain a proposal ID
+      for (const log of receipt.logs) {
+        if (log.topics?.length > 1) {
+          const potentialId = log.topics[1];
+          console.log('Potential proposal ID from log:', potentialId);
+          
+          // Convert to decimal for display and database consistency
+          const proposalIdDecimal = BigInt(potentialId).toString();
+          console.log('Potential proposal ID in decimal:', proposalIdDecimal);
+          
+          await saveToSupabase(proposalIdDecimal);
+          return proposalIdDecimal;
+        }
+      }
+    }
+    
+    console.error('Could not extract proposal ID from transaction logs');
+    return null;
+  };
+  
+  const saveToSupabase = async (proposalId: string) => {
+    try {
+      console.log('Saving proposal to Supabase with ID:', proposalId);
+      console.log('Form values to save:', form.getValues());
+      
+      // Insert proposal metadata into Supabase
+      const { error } = await supabase
+        .from('proposals')
+        .insert({
+          proposal_id: proposalId,
+          title: form.getValues().title,
+          description: form.getValues().description,
+          summary: form.getValues().summary || '',
+          category: form.getValues().category || '',
+          proposer_address: address || '',
+          voting_period: getVotingPeriodInSeconds(form.getValues().votingPeriod || '1 day'),
+          created_by: address || '',
+          chain_id: chainId,
+          state: '0', // Pending
+          votes_for: 0,
+          votes_against: 0,
+          votes_abstain: 0,
+          views_count: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        
+      if (error) {
+        console.error('Error saving proposal to Supabase:', error);
+        setError(`Error saving proposal: ${error.message}`);
+        return false;
+      }
+      
+      console.log('Successfully saved proposal to Supabase');
+      // After successful insertion, navigate to the proposal page
+      setTimeout(() => {
+        navigate(`/proposals/${proposalId}`);
+      }, 1000); // Small delay to allow database to update
+      
+      return true;
+    } catch (err) {
+      console.error('Error in saveToSupabase:', err);
+      setError(`Error saving proposal: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      return false;
+    }
+  };
 
   const getVotingPeriodInSeconds = (period: string): number => {
     const days = {
@@ -508,9 +286,6 @@ const CreateProposal = ({
     try {
       setIsSubmitting(true);
       setError(null);
-      
-      const formValues = formData;
-      console.log('Submitting form data:', formValues);
 
       let targets: `0x${string}`[] = [];
       let values: bigint[] = [];
@@ -602,33 +377,107 @@ const CreateProposal = ({
 
       try {
         console.log('Attempting to send transaction using wagmi writeContract...');
+        const hash = await writeContract(config);
+        console.log('Proposal creation transaction submitted via wagmi');
         
-        // Call writeContract without awaiting - we handle the result in the useEffect hook
-        writeContract(config as any);
+        // Wait for transaction receipt
+        console.log('Waiting for transaction confirmation...');
+        const receipt = await waitForTransaction({
+          hash,
+        });
         
-        // The rest of the transaction processing will happen in the useEffect when hash changes
+        const proposalId = await processTransactionReceipt(receipt);
+        
+        if (proposalId) {
+          console.log('Proposal created successfully with ID:', proposalId);
+          toast({
+            title: 'Proposal Created',
+            description: 'Your proposal has been created successfully!',
+            status: 'success',
+            duration: 5000,
+            isClosable: true,
+          });
+        } else {
+          // Even if we couldn't extract the proposal ID, the transaction succeeded
+          // Let's inform the user and try a fallback method to find the proposal
+          console.warn('Transaction succeeded but proposal ID could not be extracted.');
+          toast({
+            title: 'Transaction Succeeded',
+            description: 'Your proposal was created, but we could not extract the proposal ID. Please check the Proposals page.',
+            status: 'warning',
+            duration: 5000,
+            isClosable: true,
+          });
+          
+          // Navigate to proposals list as fallback
+          setTimeout(() => {
+            navigate('/proposals');
+          }, 1000);
+        }
       } catch (wagmiError) {
         console.error('Failed to send transaction via wagmi:', wagmiError);
         setError(`wagmi writeContract failed: ${wagmiError instanceof Error ? wagmiError.message : 'Unknown error'}`);
-        setIsSubmitting(false);
         
-        // Try fallback method if needed
+        // Try fallback method with direct provider
         try {
           console.log('Attempting fallback with direct provider call...');
           if (window.ethereum && window.ethereum.request) {
-            // Try to wake up MetaMask with a request
+            // For direct provider interaction, we'll use a simpler approach
+            // Just send a transaction to wake up MetaMask first
             try {
               await window.ethereum.request({
-                method: 'eth_requestAccounts'
+                method: 'eth_sendTransaction',
+                params: [{
+                  from: address,
+                  to: address, // Self-transaction that will be rejected
+                  value: '0x0', // Zero value
+                  data: '0x' // Empty data
+                }]
+              });
+            } catch (cancelError) {
+              // User likely rejected this dummy transaction, that's okay
+              // At least MetaMask is now awake
+              console.log('Dummy transaction rejected, but MetaMask should be awake now');
+            }
+            
+            // Now try the original transaction method again
+            console.log('Retrying with writeContract after waking up MetaMask...');
+            const hash = await writeContract(config);
+            console.log('Transaction submitted on second attempt!');
+            
+            // Wait for transaction receipt
+            console.log('Waiting for transaction confirmation...');
+            const receipt = await waitForTransaction({
+              hash,
+            });
+            
+            const proposalId = await processTransactionReceipt(receipt);
+            
+            if (proposalId) {
+              console.log('Proposal created successfully with ID:', proposalId);
+              toast({
+                title: 'Proposal Created',
+                description: 'Your proposal has been created successfully!',
+                status: 'success',
+                duration: 5000,
+                isClosable: true,
+              });
+            } else {
+              // Even if we couldn't extract the proposal ID, the transaction succeeded
+              // Let's inform the user and try a fallback method to find the proposal
+              console.warn('Transaction succeeded but proposal ID could not be extracted.');
+              toast({
+                title: 'Transaction Succeeded',
+                description: 'Your proposal was created, but we could not extract the proposal ID. Please check the Proposals page.',
+                status: 'warning',
+                duration: 5000,
+                isClosable: true,
               });
               
-              // Retry the writeContract call after waking MetaMask
-              console.log('Retrying writeContract after MetaMask wake-up...');
-              writeContract(config as any);
-              // Result will be handled by the useEffect hook
-            } catch (metaMaskError) {
-              console.error('Error waking up MetaMask:', metaMaskError);
-              throw metaMaskError;
+              // Navigate to proposals list as fallback
+              setTimeout(() => {
+                navigate('/proposals');
+              }, 1000);
             }
           } else {
             throw new Error('No Ethereum provider available for fallback');
@@ -637,17 +486,100 @@ const CreateProposal = ({
           console.error('Fallback method also failed:', providerError);
           setError(`Both methods failed. Please try refreshing the page and ensure MetaMask is unlocked.`);
           setIsSubmitting(false);
+          return;
         }
       }
     } catch (err) {
       console.error('Failed to create proposal:', err);
       setError(err instanceof Error ? err.message : 'Failed to create proposal');
       setIsSubmitting(false);
+    }
+  };
+
+  const handleMetaMaskTransaction = async () => {
+    try {
+      console.log('Handling MetaMask transaction with data:', {
+        address,
+        governorAddress,
+        actions: formValues.actions
+      });
+
+      if (!window.ethereum) {
+        console.error('MetaMask not detected');
+        setError('MetaMask not detected');
+        return;
+      }
+      
+      // Reset error state
+      setError('');
+      setIsSubmitting(true);
+      
+      // Use writeContract function from wagmi hook
+      const { writeContractAsync } = useWriteContract();
+      
+      if (!writeContractAsync) {
+        throw new Error('writeContract function not available');
+      }
+      
+      // Prepare contract call config
+      const config = {
+        address: governorAddress as `0x${string}`,
+        abi: governorAbi as any,
+        functionName: 'propose',
+        args: [
+          formValues.actions.map(action => action.target as `0x${string}`),
+          formValues.actions.map(action => BigInt(action.value || '0')),
+          formValues.actions.map(action => '0x'),
+          formValues.actions.map(action => '0x'),
+          `${formValues.title}\n\n${formValues.description}`
+        ],
+        account: address as `0x${string}`,
+        chain: currentChain
+      };
+
+      console.log('Submitting transaction with config:', config);
+      const hash = await writeContractAsync(config);
+      console.log('Transaction submitted:', hash);
+      
+      // Wait for transaction confirmation - using ethers as a fallback
+      console.log('Waiting for transaction confirmation...');
+      const provider = new ethers.providers.Web3Provider(window.ethereum as any);
+      const receipt = await provider.waitForTransaction(hash);
+      
+      const proposalId = await processTransactionReceipt(receipt);
+      
+      if (proposalId) {
+        console.log('Proposal created successfully with ID:', proposalId);
+        toast({
+          title: 'Proposal Created',
+          description: 'Your proposal has been created successfully!',
+          variant: 'default',
+        });
+      } else {
+        // Even if we couldn't extract the proposal ID, the transaction succeeded
+        // Let's inform the user and try a fallback method to find the proposal
+        console.warn('Transaction succeeded but proposal ID could not be extracted.');
+        toast({
+          title: 'Transaction Succeeded',
+          description: 'Your proposal was created, but we could not extract the proposal ID. Please check the Proposals page.',
+          variant: 'warning',
+        });
+        
+        // Navigate to proposals list as fallback
+        setTimeout(() => {
+          navigate('/proposals');
+        }, 1000);
+      }
+    } catch (error) {
+      console.error('Transaction error:', error);
+      setError(`Transaction failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       toast({
-        title: 'Transaction Failed', 
-        description: err instanceof Error ? err.message : 'Unknown error occurred',
+        title: 'Transaction Failed',
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
         variant: 'destructive',
       });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -1009,7 +941,7 @@ const CreateProposal = ({
               </Button>
               <Button 
                 type="button" 
-                disabled={isSubmitting || isPending || !hasEnoughVotingPower}
+                disabled={isSubmitting || isConfirming || !hasEnoughVotingPower}
                 onClick={async () => {
                   // Validate the form first
                   const valid = await form.trigger();
@@ -1026,7 +958,7 @@ const CreateProposal = ({
                   onSubmit(formData);
                 }}
               >
-                {isSubmitting || isPending ? "Creating Proposal..." : "Submit Proposal"}
+                {isSubmitting || isConfirming ? "Creating Proposal..." : "Submit Proposal"}
               </Button>
             </div>
           </form>

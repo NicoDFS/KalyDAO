@@ -1,29 +1,84 @@
 import { useCallback, useMemo } from 'react';
-import { Contract, ethers } from 'ethers';
+import { useChainId, useAccount } from 'wagmi';
 import GovernanceTokenABI from '../abis/GovernanceToken.json';
 import GovernorContractABI from '../abis/GovernorContract.json';
 import TimeLockABI from '../abis/TimeLock.json';
 import TreasuryVaultABI from '../abis/TreasuryVault.json';
 import { CONTRACT_ADDRESSES_BY_NETWORK } from '../contracts/addresses';
+import { getTransactionGasConfig } from '../config/transaction';
 
 export function useDao() {
-  const contract = useMemo(() => {
-    // Initialize contract here
-    return new Contract(CONTRACT_ADDRESSES_BY_NETWORK.mainnet.GOVERNANCE_TOKEN, GovernanceTokenABI);
-  }, []);
+  const chainId = useChainId();
+  const { address } = useAccount();
+  
+  const contracts = useMemo(() => {
+    // Get the appropriate network addresses based on chainId
+    const addresses = chainId === 3889 
+      ? CONTRACT_ADDRESSES_BY_NETWORK.testnet
+      : CONTRACT_ADDRESSES_BY_NETWORK.mainnet;
+    
+    return {
+      governanceToken: {
+        address: addresses.GOVERNANCE_TOKEN,
+        abi: GovernanceTokenABI
+      },
+      governor: {
+        address: addresses.GOVERNOR_CONTRACT,
+        abi: GovernorContractABI
+      },
+      timelock: {
+        address: addresses.TIMELOCK,
+        abi: TimeLockABI
+      },
+      treasury: {
+        address: addresses.TREASURY_VAULT,
+        abi: TreasuryVaultABI
+      }
+    };
+  }, [chainId]);
 
-  const createProposal = useCallback(async (/* params */) => {
-    // Implement contract interaction
-  }, [contract]);
+  const createProposal = useCallback(async (
+    targets: `0x${string}`[],
+    values: bigint[],
+    calldatas: `0x${string}`[],
+    description: string,
+    writeContractFn: any
+  ) => {
+    if (!writeContractFn || !address) throw new Error('Write function or address not available');
+    
+    const gasConfig = getTransactionGasConfig();
+    
+    return writeContractFn({
+      address: contracts.governor.address as `0x${string}`,
+      abi: contracts.governor.abi,
+      functionName: 'propose',
+      args: [targets, values, calldatas, description],
+      ...gasConfig
+    });
+  }, [contracts.governor, address]);
 
-  const vote = useCallback(async (/* params */) => {
-    // Implement contract interaction
-  }, [contract]);
+  const vote = useCallback(async (
+    proposalId: bigint,
+    support: number, // 0 = Against, 1 = For, 2 = Abstain
+    reason: string,
+    writeContractFn: any
+  ) => {
+    if (!writeContractFn || !address) throw new Error('Write function or address not available');
+    
+    const gasConfig = getTransactionGasConfig();
+    
+    return writeContractFn({
+      address: contracts.governor.address as `0x${string}`,
+      abi: contracts.governor.abi,
+      functionName: 'castVoteWithReason',
+      args: [proposalId, support, reason],
+      ...gasConfig
+    });
+  }, [contracts.governor, address]);
 
   return {
-    contract,
+    contracts,
     createProposal,
-    vote,
-    // ... other contract functions
+    vote
   };
 }
