@@ -24,6 +24,7 @@ import { Progress } from "@/components/ui/progress";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Discussion } from "./Discussion";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -510,9 +511,10 @@ const ProposalDetail = ({
 
       {/* Proposal details tabs */}
       <Tabs defaultValue="details" className="w-full">
-        <TabsList className="grid w-full grid-cols-2">
+        <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="history">Vote History</TabsTrigger>
+          <TabsTrigger value="discussion">Discussion</TabsTrigger>
         </TabsList>
         <TabsContent value="details" className="mt-6">
           <div className="prose max-w-none">
@@ -554,6 +556,9 @@ const ProposalDetail = ({
               </span>
             </div>
           </div>
+        </TabsContent>
+        <TabsContent value="discussion" className="mt-6">
+          <Discussion proposalId={proposalData.proposal_id} />
         </TabsContent>
       </Tabs>
 
