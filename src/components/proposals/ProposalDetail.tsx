@@ -112,7 +112,7 @@ const governanceTokenABI = [
 ] as const;
 
 const ProposalDetail = ({
-  minProposalThreshold = 50000,
+  minProposalThreshold = 100000,
 }: ProposalDetailProps) => {
   const { id } = useParams<{ id: string }>();
   const [userVote, setUserVote] = useState<"for" | "against" | null>(null);

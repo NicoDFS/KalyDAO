@@ -119,7 +119,7 @@ const governorAbi = [
 ] as const;
 
 const CreateProposal = ({
-  minProposalThreshold = 50000,
+  minProposalThreshold = 100000,
 }: CreateProposalProps) => {
   const navigate = useNavigate();
   // Using toast imported from "@/components/ui/use-toast"
