@@ -33,6 +33,8 @@ create table if not exists proposals (
   tags text[],
   views_count integer default 0,
   metadata jsonb,
+  chain_id integer,
+  created_by text,
   
   constraint proposals_proposal_id_key unique (proposal_id)
 );
@@ -59,15 +61,14 @@ create trigger proposals_updated_at
 
 -- Create function to increment view count
 create or replace function increment_proposal_views(p_proposal_id text)
-returns proposals as $$
-declare
-  updated_proposal proposals;
+returns void as $$
 begin
   update proposals
-  set views_count = views_count + 1
-  where proposal_id = p_proposal_id
-  returning * into updated_proposal;
-  
-  return updated_proposal;
+  set views_count = coalesce(views_count, 0) + 1
+  where proposal_id = p_proposal_id;
 end;
-$$ language plpgsql; 
+$$ language plpgsql;
+
+-- Grant execute permission on the function
+grant execute on function increment_proposal_views(text) to authenticated;
+grant execute on function increment_proposal_views(text) to service_role; 

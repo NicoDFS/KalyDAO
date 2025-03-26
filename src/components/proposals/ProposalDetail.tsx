@@ -15,7 +15,8 @@ import {
   useReadContract,
   useChainId,
   useWriteContract,
-  useTransaction
+  useTransaction,
+  useBlockNumber
 } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { CONTRACT_ADDRESSES_BY_NETWORK } from '@/blockchain/contracts/addresses';
@@ -41,6 +42,11 @@ import { supabase } from '@/lib/supabase';
 import { formatNumber } from '@/utils/format';
 import { useDao } from '@/blockchain/hooks/useDao';
 import { ethers } from 'ethers';
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { getTransactionGasConfig } from '@/blockchain/config/transaction';
+import { kalyChainMainnet, kalyChainTestnet } from '@/blockchain/config/chains';
+import { CountdownTimer } from './CountdownTimer';
 
 interface ProposalDetailProps {
   minProposalThreshold?: number;
@@ -88,6 +94,23 @@ const governorABI = [
   }
 ] as const;
 
+const governanceTokenABI = [
+  {
+    name: 'delegates',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ name: '', type: 'address' }]
+  },
+  {
+    name: 'delegate',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'delegatee', type: 'address' }],
+    outputs: []
+  }
+] as const;
+
 const ProposalDetail = ({
   minProposalThreshold = 50000,
 }: ProposalDetailProps) => {
@@ -95,15 +118,20 @@ const ProposalDetail = ({
   const [userVote, setUserVote] = useState<"for" | "against" | null>(null);
   const [showVoteDialog, setShowVoteDialog] = useState(false);
   const [voteDirection, setVoteDirection] = useState<"for" | "against">("for");
+  const [voteReason, setVoteReason] = useState<string>("");
   const [proposalData, setProposalData] = useState<ProposalMetadata | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDelegated, setIsDelegated] = useState<boolean>(false);
+  const [isDelegating, setIsDelegating] = useState<boolean>(false);
+  const [delegateError, setDelegateError] = useState<string | null>(null);
   
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
-  const { contracts, vote } = useDao();
+  const { contracts, vote, delegate } = useDao();
   const { writeContract } = useWriteContract();
+  const currentChain = chainId === 3889 ? kalyChainTestnet : kalyChainMainnet;
 
   // Get the correct contract addresses based on current network
   const governorAddress = chainId === 3889
@@ -117,19 +145,9 @@ const ProposalDetail = ({
       : CONTRACT_ADDRESSES_BY_NETWORK.mainnet.GOVERNANCE_TOKEN,
   });
 
-  // On-chain data queries
-  const { data: proposer } = useReadContract({
-    address: governorAddress as `0x${string}`,
-    abi: governorABI,
-    functionName: 'proposalProposer',
-    args: [BigInt(id || '0')],
-  });
-
-  const { data: snapshot } = useReadContract({
-    address: governorAddress as `0x${string}`,
-    abi: governorABI,
-    functionName: 'proposalSnapshot',
-    args: [BigInt(id || '0')],
+  // Get current block number
+  const { data: currentBlock } = useBlockNumber({
+    watch: true,
   });
 
   const { data: deadline } = useReadContract({
@@ -137,6 +155,37 @@ const ProposalDetail = ({
     abi: governorABI,
     functionName: 'proposalDeadline',
     args: [BigInt(id || '0')],
+    chainId,
+    account: address
+  });
+
+  // Add effect to log deadline data
+  useEffect(() => {
+    if (deadline && currentBlock) {
+      console.log('Deadline from contract:', {
+        rawValue: deadline,
+        asNumber: Number(deadline),
+        currentBlock: Number(currentBlock || 0)
+      });
+    }
+  }, [deadline, currentBlock]);
+
+  const { data: proposer } = useReadContract({
+    address: governorAddress as `0x${string}`,
+    abi: governorABI,
+    functionName: 'proposalProposer',
+    args: [BigInt(id || '0')],
+    chainId,
+    account: address
+  });
+
+  const { data: snapshot } = useReadContract({
+    address: governorAddress as `0x${string}`,
+    abi: governorABI,
+    functionName: 'proposalSnapshot',
+    args: [BigInt(id || '0')],
+    chainId,
+    account: address
   });
 
   const { data: rawVotes } = useReadContract({
@@ -144,6 +193,8 @@ const ProposalDetail = ({
     abi: governorABI,
     functionName: 'proposalVotes',
     args: [BigInt(id || '0')],
+    chainId,
+    account: address
   });
 
   const { data: state } = useReadContract({
@@ -151,6 +202,8 @@ const ProposalDetail = ({
     abi: governorABI,
     functionName: 'state',
     args: [BigInt(id || '0')],
+    chainId,
+    account: address
   });
 
   // Parse the votes data
@@ -167,6 +220,46 @@ const ProposalDetail = ({
   const forPercentage = totalVotes > 0 ? (Number(votes.forVotes) / totalVotes) * 100 : 0;
   const againstPercentage = totalVotes > 0 ? (Number(votes.againstVotes) / totalVotes) * 100 : 0;
   const abstainPercentage = totalVotes > 0 ? (Number(votes.abstainVotes) / totalVotes) * 100 : 0;
+
+  // Get the governance token contract
+  const governanceTokenAddress = chainId === 3889
+    ? CONTRACT_ADDRESSES_BY_NETWORK.testnet.GOVERNANCE_TOKEN
+    : CONTRACT_ADDRESSES_BY_NETWORK.mainnet.GOVERNANCE_TOKEN;
+
+  // Check delegation status
+  const { data: currentDelegate } = useReadContract({
+    address: governanceTokenAddress as `0x${string}`,
+    abi: governanceTokenABI,
+    functionName: 'delegates',
+    args: [address || '0x0000000000000000000000000000000000000000'],
+    chainId,
+    account: address
+  });
+
+  // Update delegation status when currentDelegate changes
+  useEffect(() => {
+    if (currentDelegate && address) {
+      setIsDelegated(currentDelegate.toLowerCase() === address.toLowerCase());
+    }
+  }, [currentDelegate, address]);
+
+  // Handle delegation
+  const handleDelegate = async () => {
+    if (!address || !chainId || !writeContract) return;
+    
+    setIsDelegating(true);
+    setDelegateError(null);
+    
+    try {
+      await delegate(address as `0x${string}`, writeContract);
+      setIsDelegated(true);
+    } catch (err) {
+      console.error('Failed to delegate:', err);
+      setDelegateError(err instanceof Error ? err.message : 'Failed to delegate voting power');
+    } finally {
+      setIsDelegating(false);
+    }
+  };
 
   // Fetch both on-chain and off-chain data
   useEffect(() => {
@@ -302,7 +395,7 @@ const ProposalDetail = ({
         }
 
         // Update on-chain data in Supabase if needed
-        if (rawVotes) {
+        if (rawVotes && snapshot && deadline) {
           await supabase
             .from('proposals')
             .update({
@@ -310,6 +403,8 @@ const ProposalDetail = ({
               votes_against: Number(votes.againstVotes),
               votes_abstain: Number(votes.abstainVotes),
               state: state ? state.toString() : proposal.state,
+              snapshot_timestamp: Number(snapshot),
+              deadline_timestamp: Number(deadline),
               updated_at: new Date().toISOString(),
             })
             .eq('proposal_id', proposal.proposal_id);
@@ -325,8 +420,12 @@ const ProposalDetail = ({
     fetchProposalData();
   }, [id, rawVotes, state]);
 
-  const getProposalState = (state: number): string => {
+  // Update getProposalState to handle numeric states
+  const getProposalState = (state: number | string): string => {
     const states = ['Pending', 'Active', 'Canceled', 'Defeated', 'Succeeded', 'Queued', 'Expired', 'Executed'];
+    if (typeof state === 'string') {
+      return state;
+    }
     return states[state] || 'Unknown';
   };
 
@@ -338,9 +437,32 @@ const ProposalDetail = ({
   };
 
   // Format date
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString("en-US", {
+  const formatDate = (dateString: string | number | bigint) => {
+    if (typeof dateString === 'string') {
+      return new Date(dateString).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+    }
+    
+    // If it's a block number, calculate estimated date
+    // Average block time is 2 seconds for KalyChain
+    const AVERAGE_BLOCK_TIME = 2; // seconds
+    const blockDifference = Number(dateString) - Number(currentBlock || 0);
+    
+    console.log('Date calculation debug:', {
+      targetBlock: Number(dateString),
+      currentBlock: Number(currentBlock || 0),
+      blockDifference,
+      secondsUntil: blockDifference * AVERAGE_BLOCK_TIME,
+      daysUntil: (blockDifference * AVERAGE_BLOCK_TIME) / (60 * 60 * 24),
+      estimatedDate: new Date(Date.now() + (blockDifference * AVERAGE_BLOCK_TIME * 1000)).toLocaleString()
+    });
+    
+    const secondsUntil = blockDifference * AVERAGE_BLOCK_TIME;
+    const estimatedDate = new Date(Date.now() + (secondsUntil * 1000));
+    return estimatedDate.toLocaleDateString("en-US", {
       year: "numeric",
       month: "long",
       day: "numeric",
@@ -349,28 +471,44 @@ const ProposalDetail = ({
 
   // Handle vote
   const handleVote = (direction: "for" | "against") => {
+    if (!isDelegated) {
+      setDelegateError('You need to delegate your voting power first');
+      return;
+    }
+    
     setVoteDirection(direction);
     setShowVoteDialog(true);
   };
 
   const confirmVote = async () => {
-    if (!id) return;
+    if (!writeContract || !id) return;
     
     setIsSubmitting(true);
     try {
       // Convert direction to support value (0=against, 1=for)
       const supportValue = voteDirection === 'for' ? 1 : 0;
       
-      // Use the useDao hook to cast the vote
+      // Cast the vote using the useDao hook's vote function
       await vote(
         BigInt(id),
         supportValue,
-        'Voted via KalyDAO dApp',
+        voteReason.trim() || 'Voted via KalyDAO dApp',
         writeContract
       );
       
+      // Update local state
       setUserVote(voteDirection);
       setShowVoteDialog(false);
+      
+      // Update database after successful on-chain vote
+      await supabase
+        .from('proposals')
+        .update({
+          [`votes_${voteDirection}`]: Number(votes[`${voteDirection}Votes`]) + Number(userVotingPower),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('proposal_id', id);
+        
     } catch (err) {
       console.error('Failed to vote:', err);
       setError(err instanceof Error ? err.message : 'Failed to vote on proposal');
@@ -394,6 +532,29 @@ const ProposalDetail = ({
     }
   };
 
+  // Check if voting is allowed
+  const canVote = () => {
+    if (!isConnected) return false;
+    if (userVote) return false;
+    if (userVotingPower <= 0) return false;
+    
+    // Get current block number
+    const currentBlock = snapshot ? Number(snapshot) : 0;
+    const proposalDeadline = deadline ? Number(deadline) : 0;
+    
+    // Check if we're within the voting period
+    const isVotingPeriod = currentBlock <= proposalDeadline;
+    
+    // Convert state to number if it's a string
+    const numericState = typeof state === 'string' ? 
+      ['Pending', 'Active', 'Canceled', 'Defeated', 'Succeeded', 'Queued', 'Expired', 'Executed']
+        .indexOf(state) : Number(state);
+    
+    // Only allow voting if state is Active (1)
+    // Note: Pending (0) means we're in the delay period and voting hasn't started yet
+    return numericState === 1 && isVotingPeriod;
+  };
+
   if (isLoading) return <div>Loading...</div>;
   if (error) return <div>Error: {error}</div>;
   if (!proposalData) return <div>Proposal not found</div>;
@@ -413,11 +574,31 @@ const ProposalDetail = ({
       <div className="mb-6">
         <div className="flex justify-between items-start">
           <h1 className="text-2xl font-bold text-gray-900">{proposalData?.title}</h1>
-          <span
-            className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor()}`}
-          >
-            {getProposalState(Number(state))}
-          </span>
+          <div className="flex flex-col items-end gap-2">
+            <span
+              className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor()}`}
+            >
+              {getProposalState(state || proposalData?.state || 0)}
+            </span>
+            {Number(state) === 0 && snapshot && currentBlock && (
+              <div className="text-xs text-gray-600">
+                <CountdownTimer
+                  targetBlock={Number(snapshot)}
+                  currentBlock={Number(currentBlock)}
+                  type="badge"
+                />
+              </div>
+            )}
+            {Number(state) === 1 && deadline && currentBlock && (
+              <div className="text-xs text-gray-600">
+                <CountdownTimer
+                  targetBlock={Number(deadline)}
+                  currentBlock={Number(currentBlock)}
+                  type="badge"
+                />
+              </div>
+            )}
+          </div>
         </div>
         <p className="text-gray-600 mt-2">{proposalData?.description}</p>
       </div>
@@ -430,7 +611,7 @@ const ProposalDetail = ({
         </div>
         <div className="flex items-center text-sm text-gray-600">
           <Calendar className="h-4 w-4 mr-2" />
-          <span>Voting Ends: {formatDate(proposalData?.updated_at || "")}</span>
+          <span>Voting Ends: {deadline ? `~${formatDate(Number(deadline))}` : 'Not set'}</span>
         </div>
       </div>
 
@@ -438,7 +619,12 @@ const ProposalDetail = ({
       <Card className="mb-6">
         <CardContent className="pt-6">
           <div className="space-y-4">
-            <h3 className="text-lg font-medium">Voting Progress</h3>
+            <div className="flex justify-between items-center">
+              <h3 className="text-lg font-medium">Voting Progress</h3>
+              <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor()}`}>
+                {getProposalState(state || proposalData?.state || 0)}
+              </span>
+            </div>
             <div>
               <div className="flex justify-between mb-1 text-sm">
                 <div className="flex items-center gap-1">
@@ -462,36 +648,54 @@ const ProposalDetail = ({
                 <Users className="h-4 w-4" />
                 <span>{formatNumber(totalVotes)} total votes</span>
               </div>
+              {userVotingPower > 0 && (
+                <div>
+                  Your voting power: {formatNumber(userVotingPower)}
+                </div>
+              )}
             </div>
 
             {/* Voting buttons */}
-            {Number(state) === 1 && (
+            {canVote() ? (
               <div className="pt-4">
                 {isConnected ? (
                   userVote ? (
                     <div className="bg-gray-50 p-4 rounded-md">
                       <p className="text-sm text-gray-600">
-                        You voted {voteDirection === "for" ? "FOR" : "AGAINST"} this
-                        proposal with {formatNumber(userVotingPower)} voting
-                        power.
+                        You voted {userVote.toUpperCase()} this proposal with {formatNumber(userVotingPower)} voting power.
                       </p>
                     </div>
-                  ) : (
+                  ) : isDelegated ? (
                     <div className="flex gap-4">
                       <Button
                         onClick={() => handleVote("for")}
-                        className="flex-1 bg-green-600 hover:bg-green-700"
+                        className="flex-1 bg-green-600 hover:bg-green-700 text-white"
                       >
                         <ThumbsUp className="h-4 w-4 mr-2" />
                         Vote For
                       </Button>
                       <Button
                         onClick={() => handleVote("against")}
-                        variant="destructive"
-                        className="flex-1"
+                        className="flex-1 bg-red-600 hover:bg-red-700 text-white"
                       >
                         <ThumbsDown className="h-4 w-4 mr-2" />
                         Vote Against
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="bg-gray-50 p-4 rounded-md">
+                      <p className="text-sm text-gray-600 mb-4">
+                        You need to delegate your voting power before you can vote.
+                        {delegateError && (
+                          <span className="text-red-600 block mt-2">{delegateError}</span>
+                        )}
+                      </p>
+                      <Button
+                        onClick={handleDelegate}
+                        disabled={isDelegating}
+                        className="w-full"
+                      >
+                        {isDelegating ? 'Delegating...' : 'Delegate Voting Power'}
                       </Button>
                     </div>
                   )
@@ -503,6 +707,55 @@ const ProposalDetail = ({
                     <ConnectButton />
                   </div>
                 )}
+              </div>
+            ) : (
+              <div className="pt-4">
+                <div className="bg-gray-50 p-4 rounded-md">
+                  <p className="text-sm text-gray-600">
+                    {userVote ? 
+                      `You voted ${userVote.toUpperCase()} this proposal with ${formatNumber(userVotingPower)} voting power.` :
+                      userVotingPower <= 0 ?
+                        'You need governance tokens to vote on this proposal.' :
+                        Number(state) === 0 ?
+                          'This proposal is in the delay period. Voting will start soon.' :
+                          Number(state) === 1 ?
+                            'Voting is active for this proposal.' :
+                            `Voting is ${getProposalState(state || proposalData?.state || 0).toLowerCase()} for this proposal.`
+                    }
+                  </p>
+                  {Number(state) === 0 && snapshot && currentBlock && (
+                    <div className="mt-4 space-y-2">
+                      <div className="flex justify-between text-sm text-gray-500">
+                        <span>Current block:</span>
+                        <span>{Number(currentBlock)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm text-gray-500">
+                        <span>Voting starts at block:</span>
+                        <span>{Number(snapshot)}</span>
+                      </div>
+                      <CountdownTimer
+                        targetBlock={Number(snapshot)}
+                        currentBlock={Number(currentBlock)}
+                      />
+                    </div>
+                  )}
+                  {Number(state) === 1 && deadline && currentBlock && (
+                    <div className="mt-4 space-y-2">
+                      <div className="flex justify-between text-sm text-gray-500">
+                        <span>Current block:</span>
+                        <span>{Number(currentBlock)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm text-gray-500">
+                        <span>Voting ends at block:</span>
+                        <span>{Number(deadline)}</span>
+                      </div>
+                      <CountdownTimer
+                        targetBlock={Number(deadline)}
+                        currentBlock={Number(currentBlock)}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -567,16 +820,32 @@ const ProposalDetail = ({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Confirm Your Vote</AlertDialogTitle>
-            <AlertDialogDescription>
-              You are about to vote {voteDirection.toUpperCase()} this proposal
-              with {formatNumber(userVotingPower)} voting power. This action
-              cannot be undone.
+            <AlertDialogDescription className="space-y-4">
+              <p>
+                You are about to vote {voteDirection.toUpperCase()} this proposal
+                with {formatNumber(userVotingPower)} voting power.
+              </p>
+              <div className="space-y-2">
+                <Label htmlFor="vote-reason">Reason (optional)</Label>
+                <Input
+                  id="vote-reason"
+                  placeholder="Enter your reason for voting..."
+                  value={voteReason}
+                  onChange={(e) => setVoteReason(e.target.value)}
+                />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                This action cannot be undone.
+              </p>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmVote}>
-              Confirm Vote
+            <AlertDialogAction 
+              onClick={confirmVote}
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? 'Confirming...' : 'Confirm Vote'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

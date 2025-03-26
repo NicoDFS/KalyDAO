@@ -190,7 +190,10 @@ const CreateProposal = ({
                 votes_against: 0,
                 votes_abstain: 0,
                 category: formValues.category || '',
-                tags: []
+                tags: [],
+                snapshot_timestamp: Number(onChainData.snapshot),
+                deadline_timestamp: Number(onChainData.deadline),
+                views_count: 0
               };
               
               // Save the complete data to Supabase
@@ -283,6 +286,20 @@ const CreateProposal = ({
             stateMutability: 'view',
             inputs: [{ name: 'proposalId', type: 'uint256' }],
             outputs: [{ name: '', type: 'uint8' }]
+          },
+          {
+            name: 'proposalSnapshot',
+            type: 'function',
+            stateMutability: 'view',
+            inputs: [{ name: 'proposalId', type: 'uint256' }],
+            outputs: [{ name: '', type: 'uint256' }]
+          },
+          {
+            name: 'proposalDeadline',
+            type: 'function',
+            stateMutability: 'view',
+            inputs: [{ name: 'proposalId', type: 'uint256' }],
+            outputs: [{ name: '', type: 'uint256' }]
           }
         ],
         provider
@@ -297,17 +314,27 @@ const CreateProposal = ({
       // Get proposal state
       const state = await governorContract.state(proposalId);
       console.log('Proposal state:', state);
+
+      // Get snapshot and deadline
+      const snapshot = await governorContract.proposalSnapshot(proposalId);
+      const deadline = await governorContract.proposalDeadline(proposalId);
+      console.log('Proposal snapshot:', snapshot.toString());
+      console.log('Proposal deadline:', deadline.toString());
       
       return {
         proposer,
-        state
+        state,
+        snapshot: snapshot.toString(),
+        deadline: deadline.toString()
       };
     } catch (error) {
       console.error('Error querying blockchain for proposal data:', error);
       // If we can't get on-chain data, return fallback data
       return {
         proposer: address || '0x0000000000000000000000000000000000000000',
-        state: 0
+        state: 0,
+        snapshot: '0',
+        deadline: '0'
       };
     }
   };

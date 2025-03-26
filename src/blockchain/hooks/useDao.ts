@@ -76,9 +76,27 @@ export function useDao() {
     });
   }, [contracts.governor, address]);
 
+  const delegate = useCallback(async (
+    delegatee: `0x${string}`,
+    writeContractFn: any
+  ) => {
+    if (!writeContractFn || !address) throw new Error('Write function or address not available');
+    
+    const gasConfig = getTransactionGasConfig();
+    
+    return writeContractFn({
+      address: contracts.governanceToken.address as `0x${string}`,
+      abi: contracts.governanceToken.abi,
+      functionName: 'delegate',
+      args: [delegatee],
+      ...gasConfig
+    });
+  }, [contracts.governanceToken, address]);
+
   return {
     contracts,
     createProposal,
-    vote
+    vote,
+    delegate
   };
 }
