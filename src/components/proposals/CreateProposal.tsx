@@ -10,7 +10,8 @@ import {
   useChainId,
   useWriteContract,
   useTransaction,
-  type BaseError
+  type BaseError,
+  useReadContract
 } from 'wagmi';
 import { type Abi } from 'viem';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
@@ -87,6 +88,36 @@ interface Window {
   };
 }
 
+// Define the governor ABI once at the top level
+const governorAbi = [
+  {
+    inputs: [
+      { type: 'address[]', name: 'targets' },
+      { type: 'uint256[]', name: 'values' },
+      { type: 'bytes[]', name: 'calldatas' },
+      { type: 'string', name: 'description' }
+    ],
+    name: 'propose',
+    outputs: [{ type: 'uint256', name: '' }],
+    stateMutability: 'nonpayable',
+    type: 'function'
+  },
+  {
+    inputs: [],
+    name: 'votingDelay',
+    outputs: [{ type: 'uint256', name: '' }],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  {
+    inputs: [],
+    name: 'votingPeriod',
+    outputs: [{ type: 'uint256', name: '' }],
+    stateMutability: 'view',
+    type: 'function'
+  }
+] as const;
+
 const CreateProposal = ({
   minProposalThreshold = 50000,
 }: CreateProposalProps) => {
@@ -133,6 +164,30 @@ const CreateProposal = ({
 
   const { data: hash, writeContract, isPending } = useWriteContract();
   
+  const { data: votingDelay } = useReadContract({
+    address: governorAddress as `0x${string}`,
+    abi: governorAbi,
+    functionName: 'votingDelay',
+    chainId,
+    account: address
+  });
+
+  const { data: votingPeriod } = useReadContract({
+    address: governorAddress as `0x${string}`,
+    abi: governorAbi,
+    functionName: 'votingPeriod',
+    chainId,
+    account: address
+  });
+
+  // Helper function to format blocks to days (assuming 2-second block time)
+  const formatBlocksToDays = (blocks: bigint | undefined): string => {
+    if (!blocks) return '...';
+    const BLOCKS_PER_DAY = 43200; // 2-second blocks = 43200 blocks per day
+    const days = Number(blocks) / BLOCKS_PER_DAY;
+    return days.toFixed(1);
+  };
+
   useEffect(() => {
     if (hash) {
       setTxHash(hash);
@@ -602,22 +657,6 @@ const CreateProposal = ({
 
       // Now try the contract write
       console.log('Submitting transaction...');
-      const governorAbi = [
-        {
-          inputs: [
-            { type: 'address[]', name: 'targets' },
-            { type: 'uint256[]', name: 'values' },
-            { type: 'bytes[]', name: 'calldatas' },
-            { type: 'string', name: 'description' }
-          ],
-          name: 'propose',
-          outputs: [{ type: 'uint256', name: '' }],
-          stateMutability: 'nonpayable',
-          type: 'function'
-        }
-      ] as const;
-
-      // Use type assertion to bypass TypeScript errors
       const config = {
         address: contracts.governor.address as `0x${string}`,
         abi: governorAbi,
@@ -886,54 +925,28 @@ const CreateProposal = ({
                   )}
                 />
 
-                <FormField
-                  control={form.control}
-                  name="votingPeriod"
-                  render={({ field }) => (
-                    <FormItem>
-                      <div className="flex items-center gap-2">
-                        <FormLabel>Voting Period</FormLabel>
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Info className="h-4 w-4 text-gray-400" />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p className="w-80 text-sm">
-                                The voting period determines how long the
-                                proposal will be open for voting. Standard
-                                periods are recommended for most proposals.
-                              </p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      </div>
-                      <Select
-                        onValueChange={field.onChange}
-                        defaultValue={field.value}
-                      >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select a voting period" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="3days">
-                            3 Days (Standard)
-                          </SelectItem>
-                          <SelectItem value="5days">5 Days</SelectItem>
-                          <SelectItem value="7days">
-                            7 Days (Extended)
-                          </SelectItem>
-                          <SelectItem value="14days">
-                            14 Days (Major Changes)
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Info className="h-4 w-4 text-gray-400" />
+                    <span className="text-sm text-gray-600">
+                      Voting Configuration (set by contract):
+                    </span>
+                  </div>
+                  <div className="bg-gray-50 p-4 rounded-md space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span>Voting Delay:</span>
+                      <span>{formatBlocksToDays(votingDelay)} days ({votingDelay?.toString() || '...'} blocks)</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span>Voting Period:</span>
+                      <span>{formatBlocksToDays(votingPeriod)} days ({votingPeriod?.toString() || '...'} blocks)</span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      After proposal creation, there is a {formatBlocksToDays(votingDelay)} day delay before voting starts.
+                      Once voting begins, it remains open for {formatBlocksToDays(votingPeriod)} days.
+                    </p>
+                  </div>
+                </div>
               </CardContent>
             </Card>
 
