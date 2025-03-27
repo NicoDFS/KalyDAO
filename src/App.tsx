@@ -7,6 +7,7 @@ import ProposalDetail from "./components/proposals/ProposalDetail";
 import CreateProposal from "./components/proposals/CreateProposal";
 import { TokenDetailPage } from "./components/token";
 import WrapKLC from "./components/wrap/WrapKLC";
+import ApiTest from "./components/test/ApiTest";
 import routes from "tempo-routes";
 import { RainbowKitProvider } from '@rainbow-me/rainbowkit';
 import { WagmiProvider } from 'wagmi';
@@ -34,6 +35,7 @@ function App() {
                   <Route path="/create-proposal" element={<CreateProposal />} />
                   <Route path="/token" element={<TokenDetailPage />} />
                   <Route path="/wrap" element={<WrapKLC />} />
+                  <Route path="/test/api" element={<ApiTest />} />
                 </Route>
               </Routes>
               {import.meta.env.VITE_TEMPO === "true" && useRoutes(routes)}
