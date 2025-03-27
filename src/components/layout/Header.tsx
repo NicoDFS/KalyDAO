@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Home, FileText, PenSquare, Menu, X } from "lucide-react";
+import { Home, FileText, PenSquare, Menu, X, Vote } from "lucide-react";
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 
 const Header = () => {
@@ -23,6 +23,11 @@ const Header = () => {
       name: "Create Proposal",
       path: "/create-proposal",
       icon: <PenSquare className="h-4 w-4 mr-2" />,
+    },
+    {
+      name: "Delegation",
+      path: "/delegation",
+      icon: <Vote className="h-4 w-4 mr-2" />,
     },
   ];
 

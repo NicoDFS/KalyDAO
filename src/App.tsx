@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { wagmiConfig } from './blockchain/config/wagmi';
 import '@rainbow-me/rainbowkit/styles.css';
 import BlockWatcher from './components/BlockWatcher';
+import { DelegationManager } from '@/components/governance/DelegationManager';
 
 // Create a client for TanStack Query
 const queryClient = new QueryClient();
@@ -36,6 +37,7 @@ function App() {
                   <Route path="/token" element={<TokenDetailPage />} />
                   <Route path="/wrap" element={<WrapKLC />} />
                   <Route path="/test/api" element={<ApiTest />} />
+                  <Route path="/delegation" element={<DelegationManager />} />
                 </Route>
               </Routes>
               {import.meta.env.VITE_TEMPO === "true" && useRoutes(routes)}
