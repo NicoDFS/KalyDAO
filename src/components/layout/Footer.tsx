@@ -9,9 +9,11 @@ const Footer = () => {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
           <div className="space-y-4">
             <Link to="/" className="flex items-center space-x-2">
-              <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
-                <span className="text-primary-foreground font-bold">K</span>
-              </div>
+              <img 
+                src="/kalychain.png" 
+                alt="KalyChain Logo" 
+                className="h-8 w-8"
+              />
               <span className="font-bold text-xl">KalyChain DAO</span>
             </Link>
             <p className="text-sm text-muted-foreground">

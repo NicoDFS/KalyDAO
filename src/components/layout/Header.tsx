@@ -36,9 +36,11 @@ const Header = () => {
       <div className="container flex h-20 max-w-screen-2xl items-center">
         {/* Logo */}
         <Link to="/" className="mr-6 flex items-center space-x-2">
-          <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
-            <span className="text-primary-foreground font-bold">K</span>
-          </div>
+          <img 
+            src="/kalychain.png" 
+            alt="KalyChain Logo" 
+            className="h-8 w-8"
+          />
           <span className="font-bold text-xl hidden sm:inline-block">
             KalyChain DAO
           </span>
