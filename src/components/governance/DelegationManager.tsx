@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { useAccount, useChainId, usePublicClient, useWriteContract, useReadContract } from 'wagmi';
+import { useState, useEffect, useCallback } from 'react';
+import { useAccount, useChainId, usePublicClient, useWriteContract, useReadContract, useWaitForTransactionReceipt } from 'wagmi';
 import { useDao } from '@/blockchain/hooks/useDao';
 import { formatEther, parseEther } from 'viem';
 import { Button } from '@/components/ui/button';
@@ -75,7 +75,7 @@ export function DelegationManager() {
   const chainId = useChainId();
   const publicClient = usePublicClient();
   const { contracts, delegate } = useDao();
-  const { writeContract, data: hash, isPending } = useWriteContract();
+  const { writeContract, data: hash, isPending, error: writeContractError } = useWriteContract();
   const [delegateAddress, setDelegateAddress] = useState('');
   const [isDelegating, setIsDelegating] = useState(false);
   const [delegateError, setDelegateError] = useState<string | null>(null);
@@ -83,6 +83,7 @@ export function DelegationManager() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [topDelegates, setTopDelegates] = useState<TopDelegate[]>([]);
   const [isLoadingTopDelegates, setIsLoadingTopDelegates] = useState(false);
+  const [processedHash, setProcessedHash] = useState<string | null>(null);
 
   // Get the governance token contract address based on network
   const governanceTokenAddress = chainId === 3889
@@ -119,9 +120,9 @@ export function DelegationManager() {
     account: address
   });
 
-  // Fetch delegation history
-  const fetchDelegationHistory = async () => {
-    if (!address) return;
+  // Wrap fetchDelegationHistory in useCallback
+  const fetchDelegationHistory = useCallback(async () => {
+    if (!address || !chainId) return; // Added chainId check
     
     setIsLoadingHistory(true);
     try {
@@ -144,15 +145,18 @@ export function DelegationManager() {
           transactionHash: event.transaction_hash,
           isDelegator: event.delegator_address.toLowerCase() === address.toLowerCase()
         }));
-
         setDelegationHistory(history);
+      } else {
+        setDelegationHistory([]); // Ensure history is cleared if no data
       }
     } catch (error) {
       console.error('Failed to fetch delegation history:', error);
+      setDelegationHistory([]); // Clear history on error
     } finally {
       setIsLoadingHistory(false);
     }
-  };
+  // Dependencies: address and chainId affect the query
+  }, [address, chainId]);
 
   // Set up block watcher to refresh data
   useBlockWatcher(() => {
@@ -163,103 +167,115 @@ export function DelegationManager() {
     }
   });
 
-  // Update top delegates data
-  const updateTopDelegates = async () => {
+  // Wrap updateTopDelegates in useCallback
+  const updateTopDelegates = useCallback(async () => {
+    // Dependencies: isConnected, publicClient, governanceTokenAddress, address, currentDelegate
     if (!isConnected || !publicClient || !governanceTokenAddress) return;
     
     setIsLoadingTopDelegates(true);
     try {
-      // Get all token holders from transfer events
-      const { fromBlock } = await getBlockRange(publicClient);
-      
-      const transferEvents = await publicClient.getLogs({
-        address: governanceTokenAddress as `0x${string}`,
-        event: {
-          type: 'event',
-          name: 'Transfer',
-          inputs: [
-            { indexed: true, type: 'address', name: 'from' },
-            { indexed: true, type: 'address', name: 'to' },
-            { indexed: false, type: 'uint256', name: 'value' }
-          ]
-        },
-        fromBlock,
-      });
+       // Get block range (utility function needs publicClient)
+       const { fromBlock } = await getBlockRange(publicClient);
 
-      // Get unique addresses from transfer events
-      const addresses = new Set<string>();
-      transferEvents.forEach(event => {
-        const from = event.args.from as `0x${string}`;
-        const to = event.args.to as `0x${string}`;
-        if (from) addresses.add(from);
-        if (to) addresses.add(to);
-      });
+       // Get logs (depends on publicClient, governanceTokenAddress, fromBlock)
+       const transferEvents = await publicClient.getLogs({
+         address: governanceTokenAddress as `0x${string}`,
+         event: {
+           type: 'event',
+           name: 'Transfer',
+           inputs: [
+             { indexed: true, type: 'address', name: 'from' },
+             { indexed: true, type: 'address', name: 'to' },
+             { indexed: false, type: 'uint256', name: 'value' }
+           ]
+         },
+         fromBlock,
+       });
 
-      // Add current user and their delegate
-      if (address) addresses.add(address);
-      if (currentDelegate && currentDelegate !== '0x0000000000000000000000000000000000000000') {
-        addresses.add(currentDelegate as string);
-      }
+       // Process logs (depends on transferEvents)
+       const addresses = new Set<string>();
+       transferEvents.forEach(event => {
+         const from = event.args.from as `0x${string}`;
+         const to = event.args.to as `0x${string}`;
+         if (from) addresses.add(from);
+         if (to) addresses.add(to);
+       });
 
-      // Get voting power for each address
-      const delegatesData = await Promise.all(
-        Array.from(addresses).map(async (addr) => {
-          try {
-            const votingPower = await publicClient.readContract({
-              address: governanceTokenAddress as `0x${string}`,
-              abi: governanceTokenABI.abi as Abi,
-              functionName: 'getVotes',
-              args: [addr as `0x${string}`]
-            });
+       // Add current user and delegate (depends on address, currentDelegate)
+       if (address) addresses.add(address);
+       if (currentDelegate && currentDelegate !== '0x0000000000000000000000000000000000000000') {
+         addresses.add(currentDelegate as string);
+       }
 
-            const balance = await publicClient.readContract({
-              address: governanceTokenAddress as `0x${string}`,
-              abi: governanceTokenABI.abi as Abi,
-              functionName: 'balanceOf',
-              args: [addr as `0x${string}`]
-            });
+       // Get data for each address (depends on publicClient, governanceTokenAddress, addresses array)
+       const delegatesData = await Promise.all(
+         Array.from(addresses).map(async (addr) => {
+           try {
+             const votingPower = await publicClient.readContract({
+               address: governanceTokenAddress as `0x${string}`,
+               abi: governanceTokenABI.abi as Abi,
+               functionName: 'getVotes',
+               args: [addr as `0x${string}`]
+             });
 
-            return {
-              address: addr,
-              votingPower: votingPower as bigint,
-              delegators: 1, // Default to 1 for self-delegation
-              balance: balance as bigint
-            };
-          } catch (error) {
-            console.error(`Error getting data for ${addr}:`, error);
-            return null;
-          }
-        })
-      );
+             const balance = await publicClient.readContract({
+               address: governanceTokenAddress as `0x${string}`,
+               abi: governanceTokenABI.abi as Abi,
+               functionName: 'balanceOf',
+               args: [addr as `0x${string}`]
+             });
 
-      // Filter out null results and delegates with no voting power or balance
-      const activeDelegates = delegatesData
-        .filter((delegate): delegate is TopDelegate => 
-          delegate !== null && 
-          (delegate.votingPower > BigInt(0) || delegate.balance > BigInt(0))
-        )
-        .map(delegate => ({
-          address: delegate.address,
-          votingPower: delegate.votingPower,
-          delegators: delegate.delegators,
-          balance: delegate.balance
-        }))
-        .sort((a, b) => (b.votingPower > a.votingPower ? 1 : -1));
+             return {
+               address: addr,
+               votingPower: votingPower as bigint,
+               delegators: 1, // Default to 1 for self-delegation
+               balance: balance as bigint
+             };
+           } catch (error) {
+             // console.error(`Error getting data for ${addr}:`, error);
+             // Avoid logging excessive errors during potential RPC instability
+             return null;
+           }
+         })
+       );
 
-      setTopDelegates(activeDelegates);
+       // Filter and sort (depends on delegatesData)
+       const activeDelegates = delegatesData
+         .filter((delegate): delegate is TopDelegate => 
+           delegate !== null && 
+           (delegate.votingPower > BigInt(0) || delegate.balance > BigInt(0))
+         )
+         .map(delegate => ({
+           address: delegate.address,
+           votingPower: delegate.votingPower,
+           delegators: delegate.delegators,
+           balance: delegate.balance
+         }))
+         .sort((a, b) => (b.votingPower > a.votingPower ? 1 : -1));
+
+       setTopDelegates(activeDelegates);
     } catch (error) {
-      console.error('Failed to update delegates:', error);
+      console.error('Failed to update top delegates:', error);
+      // Don't clear delegates on error, retain previous state if possible
     } finally {
       setIsLoadingTopDelegates(false);
     }
-  };
+  // Dependencies for updateTopDelegates
+  }, [isConnected, publicClient, governanceTokenAddress, address, currentDelegate]); 
 
+  // Initial data fetch useEffect - uses the memoized functions now
   useEffect(() => {
     let mounted = true;
 
     const fetchData = async () => {
-      if (isConnected && mounted) {
-        await updateTopDelegates();
+      if (isConnected && mounted && address && chainId) {
+        console.log('Initial fetch: Fetching delegates and history...') // Added log
+        await Promise.all([
+          updateTopDelegates(),
+          fetchDelegationHistory()
+        ]).catch(err => { // Added catch for Promise.all
+          console.error("Error during initial data fetch:", err);
+        });
       }
     };
 
@@ -268,112 +284,121 @@ export function DelegationManager() {
     return () => {
       mounted = false;
     };
-  }, [isConnected, address, chainId, governanceTokenAddress]);
+  // Dependencies updated to use the stable function references from useCallback
+  }, [isConnected, address, chainId, fetchDelegationHistory, updateTopDelegates]);
 
-  // Add effect to handle transaction confirmation
+  // --- Helper Function to Save Delegation to DB ---
+  const saveDelegationToDb = async (receipt: any, delegatee: string) => {
+    if (!address || !chainId || !hash) return; // Ensure required data is present
+
+    // Use the latest voting power fetched by the hook/block watcher
+    const currentVotingPowerValue = votingPower ?? 0n;
+
+    const delegationData = {
+      delegator_address: address.toLowerCase(),
+      // Use the 'currentDelegate' state which is refreshed by block watcher/refetch
+      from_delegate: (currentDelegate as string || '0x0000000000000000000000000000000000000000').toLowerCase(),
+      // Use the actual delegatee address passed to handleDelegate
+      to_delegate: delegatee.toLowerCase(),
+      transaction_hash: hash,
+      block_number: Number(receipt.blockNumber),
+      network_id: chainId,
+      voting_power: formatEther(currentVotingPowerValue as bigint),
+      timestamp: new Date().toISOString()
+    };
+
+    console.log('Writing delegation to database:', delegationData);
+
+    try {
+      const { data: existingData, error: checkError } = await supabase
+        .from('delegation_history')
+        .select('*')
+        .eq('transaction_hash', hash)
+        .single();
+
+      if (checkError && checkError.code !== 'PGRST116') { // PGRST116: No rows found
+        throw new Error(`Failed to check existing delegation: ${checkError.message}`);
+      }
+
+      let result;
+      if (existingData) {
+        result = await supabase
+          .from('delegation_history')
+          .update(delegationData)
+          .eq('transaction_hash', hash)
+          .select();
+      } else {
+        result = await supabase
+          .from('delegation_history')
+          .insert([delegationData])
+          .select();
+      }
+
+      const { error: dbError } = result;
+      if (dbError) {
+        // Handle specific errors gracefully
+        if (dbError.code === '23505') { // Unique violation
+           console.warn('Delegation record already exists for this transaction hash.');
+           // Don't throw an error, just log it. The UI will still refresh.
+           // You might still want a toast here depending on UX preference.
+           toast({
+              title: 'Notice',
+              description: 'This delegation transaction was already recorded.',
+              variant: 'default',
+            });
+        } else {
+          throw new Error(`Failed to save delegation: ${dbError.message}`);
+        }
+      } else {
+        console.log('Successfully wrote delegation to database:', result.data);
+      }
+
+    } catch (dbSaveError) {
+       console.error('Error during database operation:', dbSaveError);
+       // Re-throw or handle as needed, maybe show a specific DB error toast
+       throw dbSaveError; // Propagate error to be caught by useWaitForTransactionReceipt onError
+    }
+  };
+
+  // --- Effect to handle transaction confirmation using useWaitForTransactionReceipt ---
+  const { 
+    isLoading: isConfirming, 
+    isSuccess: isConfirmed, 
+    error: confirmationError 
+  } = useWaitForTransactionReceipt({ 
+    hash, 
+    query: {
+      enabled: !!hash,
+    }
+  });
+
+  // --- React to Transaction Confirmation ---
   useEffect(() => {
-    if (hash) {
-      console.log('Transaction hash:', hash);
+    if (isConfirming) {
+      console.log('Waiting for transaction confirmation for hash:', hash);
+    }
+
+    // Check if confirmation happened and if we haven't processed this hash yet
+    if (isConfirmed && hash && hash !== processedHash) {
+      console.log('Transaction confirmed successfully:', hash);
+      setProcessedHash(hash); // Mark this hash as processed
       
-      const processTransaction = async () => {
+      const handleConfirmation = async () => {
         try {
-          // Wait for transaction confirmation
-          console.log('Waiting for transaction confirmation...');
-          const receipt = await publicClient.waitForTransactionReceipt({ 
-            hash,
-            timeout: 60_000 // 60 seconds timeout
-          });
-          console.log('Transaction confirmed:', receipt);
+          // Fetch receipt data (needed for block number if saving to DB)
+          // Note: useWaitForTransactionReceipt provides receipt data in its 'data' property,
+          // but we might need to fetch it again if not directly accessible here
+          const receipt = await publicClient.getTransactionReceipt({ hash: hash! });
 
-          if (!address) {
-            throw new Error('No address available');
+          // Determine the actual delegatee (could be self or specified address)
+          const actualDelegatee = delegateAddress || (address ?? ''); 
+
+          if (!actualDelegatee) {
+             throw new Error("Could not determine delegatee address.");
           }
 
-          // Get the current delegate after transaction confirmation
-          const newDelegate = await publicClient.readContract({
-            address: governanceTokenAddress as `0x${string}`,
-            abi: governanceTokenABI.abi as Abi,
-            functionName: 'delegates',
-            args: [address]
-          });
+          await saveDelegationToDb(receipt, actualDelegatee);
 
-          // Get current voting power
-          const newVotingPower = await publicClient.readContract({
-            address: governanceTokenAddress as `0x${string}`,
-            abi: governanceTokenABI.abi as Abi,
-            functionName: 'getVotes',
-            args: [address]
-          });
-
-          // Prepare delegation data with only existing columns
-          const delegationData = {
-            delegator_address: address.toLowerCase(),
-            from_delegate: (currentDelegate as string || '0x0000000000000000000000000000000000000000').toLowerCase(),
-            to_delegate: (delegateAddress || address).toLowerCase(),
-            transaction_hash: hash,
-            block_number: Number(receipt.blockNumber),
-            network_id: chainId,
-            voting_power: formatEther(newVotingPower as bigint),
-            timestamp: new Date().toISOString()
-          };
-
-          console.log('Writing delegation to database:', delegationData);
-
-          // First check if the record already exists
-          const { data: existingData, error: checkError } = await supabase
-            .from('delegation_history')
-            .select('*')
-            .eq('transaction_hash', hash)
-            .single();
-
-          if (checkError && checkError.code !== 'PGRST116') { // PGRST116 means no rows returned
-            console.error('Error checking existing delegation:', checkError);
-            throw new Error(`Failed to check existing delegation: ${checkError.message}`);
-          }
-
-          let result;
-          if (existingData) {
-            // Update existing record
-            result = await supabase
-              .from('delegation_history')
-              .update(delegationData)
-              .eq('transaction_hash', hash)
-              .select();
-          } else {
-            // Insert new record
-            result = await supabase
-              .from('delegation_history')
-              .insert([delegationData])
-              .select();
-          }
-
-          const { error: dbError } = result;
-
-          if (dbError) {
-            console.error('Error saving delegation to database:', dbError);
-            // Handle specific error cases
-            if (dbError.code === '42501') { // Permission denied
-              throw new Error('Permission denied: Please ensure you are properly authenticated');
-            } else if (dbError.code === '23505') { // Unique violation
-              throw new Error('This delegation has already been recorded');
-            } else {
-              throw new Error(`Failed to save delegation: ${dbError.message}`);
-            }
-          }
-
-          console.log('Successfully wrote delegation to database:', result.data);
-
-          // Only update UI after successful database write
-          setDelegateAddress('');
-          await Promise.all([
-            refetchDelegate(),
-            refetchVotingPower(),
-            refetchBalance(),
-            updateTopDelegates(),
-            fetchDelegationHistory()
-          ]);
-
-          // Show success message
           toast({
             title: 'Delegation Successful',
             description: 'Your delegation has been updated successfully!',
@@ -381,27 +406,69 @@ export function DelegationManager() {
           });
 
         } catch (error) {
-          console.error('Error processing transaction:', error);
-          setDelegateError(
-            error instanceof Error 
-              ? error.message 
-              : 'Failed to process transaction. Please try refreshing the page.'
-          );
-          
-          // Show error toast
-          toast({
-            title: 'Error',
-            description: error instanceof Error ? error.message : 'Failed to process transaction',
-            variant: 'destructive',
-          });
+           console.error('Error processing confirmed transaction:', error);
+           setDelegateError(error instanceof Error ? error.message : 'Failed to process confirmation.');
+           toast({
+             title: 'Processing Error',
+             description: error instanceof Error ? error.message : 'Unknown error',
+             variant: 'destructive',
+           });
         } finally {
-          setIsDelegating(false);
+           // Refresh UI regardless of DB save success/failure after confirmation
+           setDelegateAddress(''); // Clear input
+           try {
+             await Promise.all([
+               refetchDelegate(),
+               refetchVotingPower(),
+               refetchBalance(),
+               fetchDelegationHistory(), // Fetch history again
+               updateTopDelegates()      // Update top delegates list
+             ]);
+           } catch (refreshError) {
+             console.error("Error refreshing data after confirmation:", refreshError);
+             // Optionally show a toast about refresh failure
+           }
+           setIsDelegating(false); // Reset delegation button state
         }
       };
 
-      processTransaction();
+      handleConfirmation();
     }
-  }, [hash, publicClient, address, chainId, currentDelegate, delegateAddress, governanceTokenAddress]);
+
+    if (confirmationError) {
+      console.error('Transaction confirmation failed:', confirmationError);
+      setDelegateError(`Transaction failed or timed out: ${confirmationError.message}`);
+      toast({
+        title: 'Transaction Failed',
+        description: confirmationError.message || 'The transaction could not be confirmed.',
+        variant: 'destructive',
+      });
+      setIsDelegating(false); // Reset delegation button state on failure
+      // Optionally trigger a UI refresh here too, to show state post-failure
+      Promise.all([
+         refetchDelegate(),
+         refetchVotingPower(),
+         refetchBalance(),
+         fetchDelegationHistory(),
+         updateTopDelegates()
+      ]).catch(err => console.error("Error refreshing data after tx failure:", err));
+    }
+  // Dependency array updated to include setProcessedHash
+  }, [isConfirming, isConfirmed, confirmationError, hash, publicClient, address, delegateAddress, currentDelegate, votingPower, refetchDelegate, refetchVotingPower, refetchBalance, fetchDelegationHistory, updateTopDelegates, processedHash, setProcessedHash]); 
+  
+   // --- Handle potential writeContract errors immediately ---
+   useEffect(() => {
+     if (writeContractError) {
+       console.error('Error submitting delegation transaction:', writeContractError);
+       setDelegateError(`Failed to submit transaction: ${writeContractError.message}`);
+       toast({
+         title: 'Submission Error',
+         description: writeContractError.message || 'Could not submit the transaction.',
+         variant: 'destructive',
+       });
+       setIsDelegating(false); // Reset button state if submission fails
+     }
+   }, [writeContractError]);
 
   const handleDelegate = async (delegatee: string) => {
     if (!writeContract || !address) {
@@ -413,10 +480,11 @@ export function DelegationManager() {
     setDelegateError(null);
 
     try {
-      // For self-delegation, use the current address
       const targetDelegate = delegatee || address;
       console.log('Initiating delegation to:', targetDelegate);
       
+      if (!address) throw new Error("Wallet address not found."); // Add check
+
       const gasConfig = getTransactionGasConfig();
       
       writeContract({
@@ -429,9 +497,14 @@ export function DelegationManager() {
         ...gasConfig
       });
     } catch (error) {
-      console.error('Error delegating tokens:', error);
-      setDelegateError(error instanceof Error ? error.message : 'Failed to delegate tokens. Please try again.');
-      setIsDelegating(false);
+      console.error('Error preparing delegation transaction:', error); // Changed error context
+      setDelegateError(error instanceof Error ? error.message : 'Failed to prepare delegation transaction.');
+      setIsDelegating(false); // Reset state if preparation fails
+      toast({ // Add toast for preparation errors
+         title: 'Error',
+         description: error instanceof Error ? error.message : 'Could not prepare the delegation transaction.',
+         variant: 'destructive',
+      });
     }
   };
 
