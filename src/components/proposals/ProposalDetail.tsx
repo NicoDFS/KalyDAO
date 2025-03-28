@@ -6,6 +6,7 @@ import {
   Users,
   ThumbsUp,
   ThumbsDown,
+  MinusCircle,
   AlertCircle,
 } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -39,7 +40,6 @@ import {
 import { type ProposalMetadata } from '@/lib/supabase';
 import type { ProposalVotes, ProposalState } from '@/blockchain/types';
 import { supabase } from '@/lib/supabase';
-import { formatNumber } from '@/utils/format';
 import { useDao } from '@/blockchain/hooks/useDao';
 import { ethers } from 'ethers';
 import { Input } from "@/components/ui/input";
@@ -47,6 +47,7 @@ import { Label } from "@/components/ui/label";
 import { getTransactionGasConfig } from '@/blockchain/config/transaction';
 import { kalyChainMainnet, kalyChainTestnet } from '@/blockchain/config/chains';
 import { CountdownTimer } from './CountdownTimer';
+import { toast } from "@/components/ui/use-toast";
 
 interface ProposalDetailProps {
   minProposalThreshold?: number;
@@ -91,6 +92,54 @@ const governorABI = [
     stateMutability: 'view',
     inputs: [{ name: 'proposalId', type: 'uint256' }],
     outputs: [{ name: '', type: 'uint8' }]
+  },
+  {
+    name: 'queue',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { type: 'address[]', name: 'targets' },
+      { type: 'uint256[]', name: 'values' },
+      { type: 'bytes[]', name: 'calldatas' },
+      { type: 'bytes32', name: 'descriptionHash' },
+    ],
+    outputs: [],
+  },
+  {
+    name: 'execute',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { type: 'address[]', name: 'targets' },
+      { type: 'uint256[]', name: 'values' },
+      { type: 'bytes[]', name: 'calldatas' },
+      { type: 'bytes32', name: 'descriptionHash' },
+    ],
+    outputs: [],
+  },
+  {
+    name: 'timelock',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }]
+  },
+  {
+    name: 'proposalEta',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'proposalId', type: 'uint256' }],
+    outputs: [{ name: '', type: 'uint256' }]
+  }
+] as const;
+
+const timelockAbi = [
+  {
+    inputs: [],
+    name: 'getMinDelay',
+    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function'
   }
 ] as const;
 
@@ -115,17 +164,20 @@ const ProposalDetail = ({
   minProposalThreshold = 100000,
 }: ProposalDetailProps) => {
   const { id } = useParams<{ id: string }>();
-  const [userVote, setUserVote] = useState<"for" | "against" | null>(null);
+  const [userVote, setUserVote] = useState<"for" | "against" | "abstain" | null>(null);
   const [showVoteDialog, setShowVoteDialog] = useState(false);
-  const [voteDirection, setVoteDirection] = useState<"for" | "against">("for");
+  const [voteDirection, setVoteDirection] = useState<"for" | "against" | "abstain">("for");
   const [voteReason, setVoteReason] = useState<string>("");
-  const [proposalData, setProposalData] = useState<ProposalMetadata | null>(null);
+  const [proposalData, setProposalData] = useState<ProposalMetadata & { targets?: string[], values?: string[], calldatas?: string[], full_description?: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDelegated, setIsDelegated] = useState<boolean>(false);
   const [isDelegating, setIsDelegating] = useState<boolean>(false);
   const [delegateError, setDelegateError] = useState<string | null>(null);
+  const [isQueueing, setIsQueueing] = useState<boolean>(false);
+  const [isExecuting, setIsExecuting] = useState<boolean>(false);
+  const [queueExecuteError, setQueueExecuteError] = useState<string | null>(null);
   
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
@@ -204,6 +256,40 @@ const ProposalDetail = ({
     args: [BigInt(id || '0')],
     chainId,
     account: address
+  });
+
+  // Read timelock address from Governor
+  const { data: timelockAddress } = useReadContract({
+    address: governorAddress as `0x${string}`,
+    abi: governorABI,
+    functionName: 'timelock',
+    chainId,
+    account: address
+  });
+
+  // Read minDelay from Timelock
+  const { data: minDelay } = useReadContract({
+    address: timelockAddress as `0x${string}` | undefined, // Only run if timelockAddress is fetched
+    abi: timelockAbi,
+    functionName: 'getMinDelay',
+    chainId,
+    account: address,
+    query: {
+      enabled: !!timelockAddress,
+    }
+  });
+
+  // Read proposalEta (timestamp when it can be executed)
+  const { data: proposalEta } = useReadContract({
+     address: governorAddress as `0x${string}`,
+     abi: governorABI,
+     functionName: 'proposalEta',
+     args: [BigInt(id || '0')],
+     chainId,
+     account: address,
+     query: {
+       enabled: Number(state) === 5,
+     }
   });
 
   // Parse the votes data
@@ -311,8 +397,9 @@ const ProposalDetail = ({
           console.log('Trying to fetch proposal with ID:', proposalId);
           const { data, error } = await supabase
             .from('proposals')
-            .select('*')
+            .select('*, comments(*, user:profiles(*)), targets, values, calldatas, full_description')
             .eq('proposal_id', proposalId)
+            .eq('chain_id', chainId)
             .single();
             
           if (error) {
@@ -431,8 +518,8 @@ const ProposalDetail = ({
 
   const userVotingPower = Number(balance?.formatted || 0);
 
-  // Format vote numbers
-  const formatNumber = (num: number): string => {
+  // Rename local function to avoid import conflict
+  const formatVoteNumber = (num: number): string => {
     return new Intl.NumberFormat().format(num);
   };
 
@@ -470,7 +557,7 @@ const ProposalDetail = ({
   };
 
   // Handle vote
-  const handleVote = (direction: "for" | "against") => {
+  const handleVote = (direction: "for" | "against" | "abstain") => {
     if (!isDelegated) {
       setDelegateError('You need to delegate your voting power first');
       return;
@@ -485,8 +572,8 @@ const ProposalDetail = ({
     
     setIsSubmitting(true);
     try {
-      // Convert direction to support value (0=against, 1=for)
-      const supportValue = voteDirection === 'for' ? 1 : 0;
+      // Convert direction to support value (0=against, 1=for, 2=abstain)
+      const supportValue = voteDirection === 'for' ? 1 : voteDirection === 'against' ? 0 : 2;
       
       // Cast the vote using the useDao hook's vote function
       await vote(
@@ -553,6 +640,84 @@ const ProposalDetail = ({
     // Only allow voting if state is Active (1)
     // Note: Pending (0) means we're in the delay period and voting hasn't started yet
     return numericState === 1 && isVotingPeriod;
+  };
+
+  // Handle Queue
+  const handleQueue = async () => {
+    if (!writeContract || !id || !proposalData || !proposalData.full_description) return;
+
+    setIsQueueing(true);
+    setQueueExecuteError(null);
+
+    try {
+      // Prepare data for the queue transaction
+      if (!proposalData?.targets || !proposalData?.values || !proposalData?.calldatas || !proposalData?.full_description) {
+        toast({ title: "Error", description: "Proposal action data is missing.", variant: "destructive" });
+        return;
+      }
+
+      const targets = proposalData.targets as `0x${string}`[]; // Cast targets at assignment
+      const values: bigint[] = proposalData.values.map(v => BigInt(v)); // Convert string values back to bigint
+      const calldatas = proposalData.calldatas as `0x${string}`[]; // Cast calldatas
+      const descriptionHash = ethers.utils.id(proposalData.full_description); // Use ethers v5 utils.id
+
+      toast({ title: "Queueing Proposal", description: "Please confirm the transaction in your wallet." });
+      
+      await writeContract({
+        address: governorAddress as `0x${string}`,
+        abi: governorABI,
+        functionName: 'queue',
+        args: [targets, values, calldatas, descriptionHash as `0x${string}`], // Remove inline cast for targets
+        chain: currentChain,
+        account: address
+        // Add gas config if needed
+      });
+      // TODO: Add transaction monitoring, success feedback, UI update
+    } catch (err) {
+      console.error('Failed to queue proposal:', err);
+      setQueueExecuteError(err instanceof Error ? err.message : 'Failed to queue proposal');
+    } finally {
+      setIsQueueing(false);
+    }
+  };
+
+  // Handle Execute
+  const handleExecute = async () => {
+     if (!writeContract || !id || !proposalData || !proposalData.full_description) return;
+
+     setIsExecuting(true);
+     setQueueExecuteError(null);
+
+     try {
+      // Prepare data for the execute transaction
+      if (!proposalData?.targets || !proposalData?.values || !proposalData?.calldatas || !proposalData?.full_description) {
+        toast({ title: "Error", description: "Proposal action data is missing.", variant: "destructive" });
+        return;
+      }
+
+      const targets = proposalData.targets as `0x${string}`[]; // Cast targets at assignment
+      const values: bigint[] = proposalData.values.map(v => BigInt(v)); // Convert string values back to bigint
+      const calldatas = proposalData.calldatas as `0x${string}`[]; // Cast calldatas
+      const descriptionHash = ethers.utils.id(proposalData.full_description); // Use ethers v5 utils.id
+
+      toast({ title: "Executing Proposal", description: "Please confirm the transaction in your wallet." });
+      
+      await writeContract({
+        address: governorAddress as `0x${string}`,
+        abi: governorABI,
+        functionName: 'execute',
+        args: [targets, values, calldatas, descriptionHash as `0x${string}`], // Remove inline cast for targets
+        chain: currentChain,
+        account: address
+        // Add gas config if needed
+      });
+      // TODO: Add transaction monitoring, success feedback, UI update
+    } catch (err) {
+      console.error('Failed to execute proposal:', err);
+      setQueueExecuteError(err instanceof Error ? err.message : 'Failed to execute proposal');
+    } finally {
+      setIsExecuting(false);
+    }
   };
 
   if (isLoading) return <div>Loading...</div>;
@@ -630,13 +795,13 @@ const ProposalDetail = ({
                 <div className="flex items-center gap-1">
                   <ThumbsUp className="h-4 w-4 text-green-600" />
                   <span>
-                    {formatNumber(Number(votes.forVotes))} ({forPercentage.toFixed(2)}%)
+                    {formatVoteNumber(Number(votes.forVotes))} ({forPercentage.toFixed(2)}%)
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
                   <ThumbsDown className="h-4 w-4 text-red-600" />
                   <span>
-                    {formatNumber(Number(votes.againstVotes))} ({againstPercentage.toFixed(2)}%)
+                    {formatVoteNumber(Number(votes.againstVotes))} ({againstPercentage.toFixed(2)}%)
                   </span>
                 </div>
               </div>
@@ -646,11 +811,11 @@ const ProposalDetail = ({
             <div className="flex justify-between text-sm text-gray-600">
               <div className="flex items-center gap-1">
                 <Users className="h-4 w-4" />
-                <span>{formatNumber(totalVotes)} total votes</span>
+                <span>{formatVoteNumber(totalVotes)} total votes</span>
               </div>
               {userVotingPower > 0 && (
                 <div>
-                  Your voting power: {formatNumber(userVotingPower)}
+                  Your voting power: {formatVoteNumber(userVotingPower)}
                 </div>
               )}
             </div>
@@ -662,7 +827,7 @@ const ProposalDetail = ({
                   userVote ? (
                     <div className="bg-gray-50 p-4 rounded-md">
                       <p className="text-sm text-gray-600">
-                        You voted {userVote.toUpperCase()} this proposal with {formatNumber(userVotingPower)} voting power.
+                        You voted {userVote.toUpperCase()} this proposal with {formatVoteNumber(userVotingPower)} voting power.
                       </p>
                     </div>
                   ) : isDelegated ? (
@@ -673,6 +838,14 @@ const ProposalDetail = ({
                       >
                         <ThumbsUp className="h-4 w-4 mr-2" />
                         Vote For
+                      </Button>
+                      <Button
+                        onClick={() => handleVote("abstain")}
+                        className="flex-1 bg-gray-500 hover:bg-gray-600 text-white"
+                        variant="secondary"
+                      >
+                        <MinusCircle className="h-4 w-4 mr-2" />
+                        Abstain
                       </Button>
                       <Button
                         onClick={() => handleVote("against")}
@@ -713,7 +886,7 @@ const ProposalDetail = ({
                 <div className="bg-gray-50 p-4 rounded-md">
                   <p className="text-sm text-gray-600">
                     {userVote ? 
-                      `You voted ${userVote.toUpperCase()} this proposal with ${formatNumber(userVotingPower)} voting power.` :
+                      `You voted ${userVote === 'abstain' ? 'ABSTAIN on' : userVote.toUpperCase()} this proposal with ${formatVoteNumber(userVotingPower)} voting power.` :
                       userVotingPower <= 0 ?
                         'You need governance tokens to vote on this proposal.' :
                         Number(state) === 0 ?
@@ -785,7 +958,7 @@ const ProposalDetail = ({
                   </span>
                 </div>
                 <span className="text-sm">
-                  {formatNumber(Number(votes.forVotes))} voting power
+                  {formatVoteNumber(Number(votes.forVotes))} voting power
                 </span>
               </div>
               <span className="text-xs text-gray-500">
@@ -801,7 +974,7 @@ const ProposalDetail = ({
                   </span>
                 </div>
                 <span className="text-sm">
-                  {formatNumber(Number(votes.againstVotes))} voting power
+                  {formatVoteNumber(Number(votes.againstVotes))} voting power
                 </span>
               </div>
               <span className="text-xs text-gray-500">
@@ -822,8 +995,8 @@ const ProposalDetail = ({
             <AlertDialogTitle>Confirm Your Vote</AlertDialogTitle>
             <AlertDialogDescription className="space-y-4">
               <p>
-                You are about to vote {voteDirection.toUpperCase()} this proposal
-                with {formatNumber(userVotingPower)} voting power.
+                You are about to vote {voteDirection === 'abstain' ? 'ABSTAIN on' : ` ${voteDirection.toUpperCase()} `} this proposal
+                with {formatVoteNumber(userVotingPower)} voting power.
               </p>
               <div className="space-y-2">
                 <Label htmlFor="vote-reason">Reason (optional)</Label>
@@ -850,6 +1023,46 @@ const ProposalDetail = ({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Add Queue/Execute buttons */} 
+      {queueExecuteError && (
+         <div className="pt-4 text-red-600 text-sm">Error: {queueExecuteError}</div>
+      )}
+      {isConnected && Number(state) === 4 && ( // Succeeded state
+        <div className="pt-4">
+          <Button 
+            onClick={handleQueue}
+            disabled={isQueueing}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            {isQueueing ? 'Queueing...' : 'Queue Proposal'}
+          </Button>
+        </div>
+      )}
+      {isConnected && Number(state) === 5 && proposalEta && minDelay && (
+         <div className="pt-4 space-y-2">
+           <p className="text-sm text-gray-600">
+             Proposal is queued. Execution available after timelock.
+           </p>
+           <CountdownTimer 
+             targetTimestamp={Number(proposalEta)}
+             currentBlock={Number(currentBlock)}
+             label="Execution available in:"
+             type="detail"
+           />
+           {Date.now() / 1000 >= Number(proposalEta) ? (
+              <Button 
+                onClick={handleExecute}
+                disabled={isExecuting}
+                className="w-full bg-purple-600 hover:bg-purple-700 text-white"
+              >
+                {isExecuting ? 'Executing...' : 'Execute Proposal'}
+              </Button>
+           ) : (
+              <Button disabled className="w-full">Execute Proposal (Waiting for Timelock)</Button>
+           )}
+         </div>
+       )}
     </div>
   );
 };

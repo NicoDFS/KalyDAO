@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
+import { useForm, useFieldArray } from "react-hook-form";
 import { z } from "zod";
 import { AlertCircle, Info, ExternalLink } from "lucide-react";
 import { 
@@ -58,23 +58,43 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+// Import the new ActionBuilder
+import ActionBuilder from './ActionBuilder';
 
 interface CreateProposalProps {
   minProposalThreshold?: number;
 }
 
+// Define the structure for a single action
+const actionSchema = z.object({
+  target: z.string().refine((val) => /^0x[a-fA-F0-9]{40}$/.test(val) || val === '', { // Allow empty string initially
+    message: "Invalid Ethereum address",
+  }),
+  value: z.string().refine((val) => /^\d+$/.test(val), { // Store as string initially, convert to bigint later
+    message: "Value must be a non-negative integer (in Wei)",
+  }),
+  calldata: z.string().refine((val) => /^0x[a-fA-F0-9]*$/.test(val), {
+    message: "Calldata must be a valid hex string (0x...)",
+  }),
+});
+
+// Update form schema
 const formSchema = z.object({
   title: z.string().min(10).max(100),
   summary: z.string().min(20).max(250),
   description: z.string().min(100),
   fullDescription: z.string().min(200),
-  category: z.string(),
-  votingPeriod: z.string(),
-  targets: z.string().optional(),
-  values: z.string().optional(),
-  calldatas: z.string().optional()
+  category: z.string().min(1, { message: "Category is required" }), // Make category required
+  votingPeriod: z.string().optional(), // Keep votingPeriod optional for now, contract sets it
+  // Remove old fields
+  // targets: z.string().optional(),
+  // values: z.string().optional(),
+  // calldatas: z.string().optional()
+  // Add actions array, make it optional for non-treasury proposals
+  actions: z.array(actionSchema).optional(),
 });
 
+// Update FormData type
 type FormData = z.infer<typeof formSchema>;
 
 // Define minimal ABI for the propose function
@@ -215,6 +235,22 @@ const CreateProposal = ({
               // Add UI-specific data from form
               const formValues = form.getValues();
               
+              // Prepare action data for Supabase
+              // Convert values to strings
+              let supabaseTargets: string[] = [];
+              let supabaseValues: string[] = [];
+              let supabaseCalldatas: string[] = [];
+
+              if (formValues.category === 'treasury' && formValues.actions) {
+                  supabaseTargets = formValues.actions.map(action => action.target);
+                  supabaseValues = formValues.actions.map(action => action.value); // Already strings from form
+                  supabaseCalldatas = formValues.actions.map(action => action.calldata);
+              }
+
+              // Combine description and fullDescription for on-chain storage
+              // We need to save the exact string used for the proposal description hash
+              const fullProposalText = `# ${formValues.title}\n\n## Summary\n${formValues.summary}\n\n## Description\n${formValues.description}\n\n## Full Description\n${formValues.fullDescription}`;
+
               // Create proposal data object
               // Convert numeric state to appropriate format based on schema
               const stateValue = onChainData.state.toString();
@@ -235,8 +271,9 @@ const CreateProposal = ({
               const completeData = {
                 proposal_id: proposalId,
                 title: formValues.title,
-                description: formValues.description,
                 summary: formValues.summary || '',
+                description: formValues.description,
+                full_description: fullProposalText, // Save the full text used for hashing
                 proposer_address: onChainData.proposer,
                 created_by: address || '',
                 chain_id: chainId,
@@ -248,7 +285,11 @@ const CreateProposal = ({
                 tags: [],
                 snapshot_timestamp: Number(onChainData.snapshot),
                 deadline_timestamp: Number(onChainData.deadline),
-                views_count: 0
+                views_count: 0,
+                // Add the action data
+                targets: supabaseTargets,
+                values: supabaseValues,
+                calldatas: supabaseCalldatas,
               };
               
               // Save the complete data to Supabase
@@ -566,10 +607,14 @@ const CreateProposal = ({
       fullDescription: "",
       category: "",
       votingPeriod: "",
-      targets: "",
-      values: "",
-      calldatas: ""
+      actions: [{ target: '', value: '0', calldata: '0x' }], // Start with one empty action by default for treasury
     }
+  });
+
+  // Initialize useFieldArray for actions
+  const { fields, append, remove } = useFieldArray({
+    control: form.control,
+    name: "actions"
   });
 
   const getVotingPeriodInSeconds = (period: string): number => {
@@ -586,6 +631,18 @@ const CreateProposal = ({
   // Get the current chain configuration
   const currentChain = chainId === 3889 ? kalyChainTestnet : kalyChainMainnet;
 
+  // Function to allow ActionBuilder to update parent form state
+  const updateActionFields = (index: number, updates: { target?: string; value?: string }) => {
+    if (updates.target !== undefined) {
+      form.setValue(`actions.${index}.target`, updates.target);
+    }
+    if (updates.value !== undefined) {
+      form.setValue(`actions.${index}.value`, updates.value);
+    }
+    // Trigger validation if needed, though zod should handle it on submit
+    // form.trigger(`actions.${index}`);
+  };
+
   const onSubmit = async (formData: FormData) => {
     try {
       setIsSubmitting(true);
@@ -600,9 +657,9 @@ const CreateProposal = ({
 
       // Only process contract interaction fields for Treasury proposals
       if (formData.category === 'treasury') {
-        targets = formData.targets?.split(',').map(addr => addr.trim()) as `0x${string}`[] || [];
-        values = formData.values?.split(',').map(val => BigInt(val.trim())) || [];
-        calldatas = formData.calldatas?.split(',').map(data => data.trim()) as `0x${string}`[] || [];
+        targets = formData.actions?.map(action => action.target) as `0x${string}`[] || [];
+        values = formData.actions?.map(action => BigInt(action.value)) || [];
+        calldatas = formData.actions?.map(action => action.calldata) as `0x${string}`[] || [];
       }
 
       // If no treasury actions specified, use a dummy action
@@ -959,82 +1016,105 @@ const CreateProposal = ({
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="targets"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Target Addresses</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder="Enter the contract address to interact with"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          The contract address this proposal will send funds to or interact with
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  {/* Map over the fields array */}
+                  {fields.map((item, index) => (
+                    <div key={item.id} className="p-4 border rounded-md space-y-3 relative">
+                      <h4 className="text-md font-medium mb-2">Action {index + 1}</h4>
+                      {fields.length > 1 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => remove(index)}
+                          className="absolute top-2 right-2 text-red-500 hover:text-red-700"
+                          aria-label={`Remove Action ${index + 1}`}
+                        >
+                          Remove
+                        </Button>
+                      )}
+                      <FormField
+                        control={form.control}
+                        name={`actions.${index}.target`}
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Target Address</FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder="0x... contract address"
+                                {...field}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
 
-                  <FormField
-                    control={form.control}
-                    name="values"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Amount (in KLC)</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="number"
-                            placeholder="Enter the amount of KLC to send"
-                            {...field}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              // Convert KLC to Wei
-                              field.onChange(value ? parseEther(value).toString() : '');
-                            }}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          The amount of KLC to transfer (if applicable)
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                      <FormField
+                        control={form.control}
+                        name={`actions.${index}.value`}
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Value (in KLC)</FormLabel>
+                            <FormControl>
+                              <Input
+                                type="number" // Input type number for better UX
+                                placeholder="Amount of KLC to send (e.g., 100)"
+                                value={field.value === '0' ? '' : ethers.utils.formatEther(field.value || '0')} // Display in KLC
+                                onChange={(e) => {
+                                  const displayValue = e.target.value;
+                                  // Convert KLC back to Wei string for the form state
+                                  try {
+                                    const weiValue = displayValue ? ethers.utils.parseEther(displayValue).toString() : '0';
+                                    field.onChange(weiValue);
+                                  } catch {
+                                    // Handle invalid input if needed, or let zod validation catch it
+                                    field.onChange('invalid'); // Or keep previous value
+                                  }
+                                }}
+                                onBlur={field.onBlur} // Keep other field props
+                                ref={field.ref}
+                                name={field.name}
+                              />
+                            </FormControl>
+                            <FormDescription>
+                               Amount in KLC (will be converted to Wei: {field.value || '0'} Wei)
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
 
-                  <FormField
-                    control={form.control}
-                    name="calldatas"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Function Call</FormLabel>
-                        <FormControl>
-                          <Select
-                            onValueChange={(value) => {
-                              // Here we would encode the selected function with its parameters
-                              field.onChange(value);
-                            }}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select the function to call" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="transfer">Transfer KLC</SelectItem>
-                              <SelectItem value="approve">Approve Spending</SelectItem>
-                              {/* Add more common treasury functions */}
-                            </SelectContent>
-                          </Select>
-                        </FormControl>
-                        <FormDescription>
-                          Select the function you want to call on the target contract
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                      <FormField
+                        control={form.control}
+                        name={`actions.${index}.calldata`}
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Action Type & Calldata</FormLabel> {/* Updated Label */}
+                            <FormControl>
+                              {/* Replace Textarea with ActionBuilder */}
+                              <ActionBuilder
+                                field={field}
+                                actionIndex={index}
+                                updateActionFields={updateActionFields}
+                              />
+                            </FormControl>
+                            {/* Removed redundant description, ActionBuilder has its own */}
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  ))}
+                  {/* Add Action Button */}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => append({ target: '', value: '0', calldata: '0x' })}
+                    className="mt-2"
+                  >
+                    + Add Action
+                  </Button>
                 </CardContent>
               </Card>
             )}

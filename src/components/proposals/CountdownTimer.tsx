@@ -2,17 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { Clock } from 'lucide-react';
 
 interface CountdownTimerProps {
-  targetBlock: number;
-  currentBlock: number;
+  targetBlock?: number;      // Make optional
+  currentBlock?: number;     // Make optional
+  targetTimestamp?: number;  // Add target timestamp (seconds)
   averageBlockTime?: number; // in seconds
-  type?: 'badge' | 'detail'; // Add type prop to handle different styles
+  type?: 'badge' | 'detail'; 
+  label?: string; // Add label prop for flexibility
 }
 
 export const CountdownTimer = ({ 
-  targetBlock, 
+  targetBlock,
   currentBlock,
+  targetTimestamp,
   averageBlockTime = 2, // KalyChain average block time is 2 seconds
-  type = 'detail'
+  type = 'detail',
+  label = "Voting starts in:" // Default label
 }: CountdownTimerProps) => {
   const [timeRemaining, setTimeRemaining] = useState<{
     days: number;
@@ -23,10 +27,24 @@ export const CountdownTimer = ({
 
   useEffect(() => {
     const calculateTimeRemaining = () => {
-      const blocksRemaining = targetBlock - currentBlock;
-      if (blocksRemaining <= 0) return null;
+      let totalSeconds = 0;
 
-      const totalSeconds = blocksRemaining * averageBlockTime;
+      if (targetTimestamp) {
+        // Timestamp-based calculation
+        const nowSeconds = Date.now() / 1000;
+        totalSeconds = targetTimestamp - nowSeconds;
+      } else if (targetBlock && currentBlock) {
+        // Block-based calculation (fallback)
+        const blocksRemaining = targetBlock - currentBlock;
+        if (blocksRemaining <= 0) return null;
+        totalSeconds = blocksRemaining * averageBlockTime;
+      } else {
+        // Not enough info
+        return null;
+      }
+
+      if (totalSeconds <= 0) return null;
+
       const days = Math.floor(totalSeconds / (24 * 60 * 60));
       const hours = Math.floor((totalSeconds % (24 * 60 * 60)) / (60 * 60));
       const minutes = Math.floor((totalSeconds % (60 * 60)) / 60);
@@ -44,7 +62,7 @@ export const CountdownTimer = ({
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [targetBlock, currentBlock, averageBlockTime]);
+  }, [targetBlock, currentBlock, averageBlockTime, targetTimestamp]);
 
   if (!timeRemaining) return null;
 
@@ -57,11 +75,14 @@ export const CountdownTimer = ({
     );
   }
 
+  // Detail view
+  const timeString = `${timeRemaining.days}d ${timeRemaining.hours}h ${timeRemaining.minutes}m ${timeRemaining.seconds}s`;
+
   return (
     <div className="flex items-center text-sm text-gray-600 mt-2">
       <Clock className="h-4 w-4 mr-2" />
       <span>
-        Voting starts in: {timeRemaining.days}d {timeRemaining.hours}h {timeRemaining.minutes}m {timeRemaining.seconds}s
+        {label} {timeString}
       </span>
     </div>
   );
