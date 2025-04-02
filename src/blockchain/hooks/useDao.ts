@@ -20,19 +20,19 @@ export function useDao() {
     return {
       governanceToken: {
         address: addresses.GOVERNANCE_TOKEN,
-        abi: GovernanceTokenABI
+        abi: GovernanceTokenABI.abi || GovernanceTokenABI
       },
       governor: {
         address: addresses.GOVERNOR_CONTRACT,
-        abi: GovernorContractABI
+        abi: GovernorContractABI.abi || GovernorContractABI
       },
       timelock: {
         address: addresses.TIMELOCK,
-        abi: TimeLockABI
+        abi: TimeLockABI.abi || TimeLockABI
       },
       treasury: {
         address: addresses.TREASURY_VAULT,
-        abi: TreasuryVaultABI
+        abi: TreasuryVaultABI.abi || TreasuryVaultABI
       }
     };
   }, [chainId]);
@@ -64,15 +64,22 @@ export function useDao() {
     writeContractFn: any
   ) => {
     if (!writeContractFn || !address) throw new Error('Write function or address not available');
+    console.log('[useDao] Inside vote function. Preparing to call writeContractFn...');
     
     const gasConfig = getTransactionGasConfig();
     
-    return writeContractFn({
+    const config = {
       address: contracts.governor.address as `0x${string}`,
       abi: contracts.governor.abi,
       functionName: 'castVoteWithReason',
       args: [proposalId, support, reason],
       ...gasConfig
+    };
+
+    console.log('[useDao] Config for writeContractFn:', config);
+
+    return writeContractFn({
+      ...config
     });
   }, [contracts.governor, address]);
 
