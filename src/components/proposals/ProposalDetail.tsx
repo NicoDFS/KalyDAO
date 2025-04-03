@@ -51,6 +51,7 @@ import { kalyChainMainnet, kalyChainTestnet } from '@/blockchain/config/chains';
 import { CountdownTimer } from './CountdownTimer';
 import { toast } from "@/components/ui/use-toast";
 import { type Abi, type AbiEvent, decodeEventLog } from 'viem';
+import { type Hash } from 'viem';
 
 interface DecodedProposalCreatedArgs {
   proposalId?: bigint;
@@ -209,7 +210,7 @@ const ProposalDetail = ({
   const [isQueueing, setIsQueueing] = useState<boolean>(false);
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
   const [queueExecuteError, setQueueExecuteError] = useState<string | null>(null);
-  const [voteHash, setVoteHash] = useState<`0x${string}` | undefined>();
+  const [queueExecuteHash, setQueueExecuteHash] = useState<Hash | undefined>();
   const [voteStatus, setVoteStatus] = useState<string | null>(null);
   
   const { address, isConnected } = useAccount();
@@ -439,7 +440,7 @@ const ProposalDetail = ({
           console.log('Trying to fetch proposal with ID:', proposalId);
           const { data, error } = await supabase
             .from('proposals')
-            .select('*, comments(*, user:profiles(*)), targets, values, calldatas, full_description')
+            .select('*, targets, values, calldatas, full_description')
             .eq('proposal_id', proposalId)
             .eq('chain_id', chainId)
             .single();
@@ -517,14 +518,14 @@ const ProposalDetail = ({
         // Increment view count
         try {
           await supabase.rpc('increment_proposal_views', { 
-            proposal_id: proposal.proposal_id 
+            proposal_id_param: proposal.proposal_id 
           });
         } catch (viewErr) {
           console.warn('Failed to increment views:', viewErr);
         }
 
         // Update on-chain data in Supabase if needed
-        if (rawVotes && snapshot && deadline && state !== undefined) {
+        if (proposal && rawVotes && snapshot && deadline && state !== undefined) {
           // Format votes for database (convert from wei)
           const dbVotesFor = formatTokenAmount(votes.forVotes);
           const dbVotesAgainst = formatTokenAmount(votes.againstVotes);
@@ -556,7 +557,7 @@ const ProposalDetail = ({
                 votes_for: dbVotesFor,
                 votes_against: dbVotesAgainst,
                 votes_abstain: dbVotesAbstain,
-                state: state.toString(),
+                state: getProposalState(Number(state)),
                 snapshot_timestamp: Number(snapshot),
                 deadline_timestamp: Number(deadline),
                 updated_at: new Date().toISOString(),
@@ -568,6 +569,7 @@ const ProposalDetail = ({
         } else {
           console.log('Skipping database update - missing on-chain data', {
             hasVotes: !!rawVotes,
+            proposalLoaded: !!proposal,
             hasSnapshot: !!snapshot, 
             hasDeadline: !!deadline,
             hasState: state !== undefined
@@ -750,20 +752,10 @@ const ProposalDetail = ({
       const stateName = getProposalState(stateNumber);
       
       console.log(`Proposal state on-chain: ${stateNumber} (${stateName})`);
-      setQueueExecuteError(`Proposal state: ${stateName} (${stateNumber})`);
-      
-      // Check proposal details through proposals mapping if available
-      try {
-        const proposalInfo = await governor.proposals(id);
-        console.log("Proposal details from contract:", proposalInfo);
-      } catch (detailsErr) {
-        console.log("Could not get proposal details:", detailsErr);
-      }
       
       return stateNumber;
     } catch (err) {
       console.error("Error checking proposal state:", err);
-      setQueueExecuteError(`Error checking state: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   };
@@ -888,9 +880,9 @@ const ProposalDetail = ({
       }
       // --- End Fetch Original Proposal Parameters ---
 
-      console.log("Successfully fetched and processed event parameters.");
+      console.log("✅ Successfully fetched and processed event parameters.");
 
-      // First, check the current state directly (optional but good practice)
+      // Check the current on-chain state before proceeding
       try {
         const stateResult = await checkProposalState();
         if (stateResult !== 4) { // 4 = Succeeded
@@ -915,58 +907,29 @@ const ProposalDetail = ({
         descriptionHashHex: descriptionHash
       });
 
-      // Send the transaction using parameters derived from the event log
-      const txResult = await writeContract({
+      // If preparation succeeded, call writeContract
+      writeContract({
         address: governorAddress as `0x${string}`,
         abi: governorABI,
         functionName: 'queue',
         args: [targets, values, calldatas, descriptionHash], // Use event-derived data
         chain: currentChain,
         account: address,
-        ...gasConfig
+        ...gasConfig // Apply gas settings
       });
-        
-      toast({ 
-        title: "Transaction Submitted", 
-        description: "Queue transaction has been sent to the blockchain." 
-      });
-      
-      console.log("✅ Queue transaction sent successfully:", txResult);
-
-      // Update Supabase state (optional, but good for UI feedback)
-      try {
-        const newState = 'Queued'; 
-        await supabase
-          .from('proposals')
-          .update({ state: newState, updated_at: new Date().toISOString() })
-          .eq('proposal_id', id);
-        console.log('Proposal state updated to Queued in database');
-      } catch (dbErr) {
-        console.error('Failed to update proposal state in database:', dbErr);
-        toast({ title: "Database Update Warning", description: "Tx sent, but DB state update failed.", variant: "destructive" });
-      }
-    } catch (err) {
-      console.error('Failed to queue proposal:', err);
-      
-      if (err instanceof Error) {
-        console.error('Error details:', err.message);
-        if (err.message.includes("Governor: proposal not successful")) {
-           setQueueExecuteError("Error: Proposal is not in 'Succeeded' state. It must be successful before queueing.");
-         } else if (err.message.includes("Governor: unknown proposal id")) {
-           // This error should now be less likely if event fetching worked
-           setQueueExecuteError("Error: Unknown proposal ID. Event log might be incorrect or contract state changed.");
-         } else if (err.message.includes("TimelockController:")) {
-           setQueueExecuteError(`Error from Timelock Controller: ${err.message}`);
-         } else {
-           setQueueExecuteError(err.message);
-         }
-      } else {
-         setQueueExecuteError('Failed to queue proposal: Unknown error');
-      }
-      toast({ title: "Error", description: err instanceof Error ? err.message : 'Failed to queue proposal', variant: "destructive" });
-    } finally {
-      setIsQueueing(false);
-    }
+    } catch (prepareErr) {
+      // Catch errors from event fetching or state checks
+      console.error('Error during handleQueue preparation:', prepareErr); 
+       if (prepareErr instanceof Error) {
+         setQueueExecuteError(prepareErr.message);
+         toast({ title: "Queue Error", description: prepareErr.message, variant: "destructive" });
+       } else {
+         const errorMsg = 'Failed to prepare queue transaction: Unknown error';
+         setQueueExecuteError(errorMsg);
+         toast({ title: "Error", description: errorMsg, variant: "destructive" });
+       }
+       setIsQueueing(false); // Ensure loading state is reset
+    } 
   };
 
   // Handle Execute - Refactored to use ProposalCreated event data
@@ -1056,9 +1019,9 @@ const ProposalDetail = ({
       }
       // --- End Fetch Original Proposal Parameters ---
 
-      console.log("Successfully fetched and processed event parameters for execution.");
+      console.log("✅ Successfully fetched and processed event parameters for execution.");
 
-      // Optional: Check state (should be Queued - 5) and ETA
+      // Check state (Queued - 5) and ETA
       try {
          const stateResult = await checkProposalState();
          if (stateResult !== 5) { // 5 = Queued
@@ -1088,51 +1051,34 @@ const ProposalDetail = ({
         descriptionHashHex: descriptionHash
       });
 
-      const txResult = await writeContract({
+      // If preparation succeeded, call writeContract
+      writeContract({
         address: governorAddress as `0x${string}`,
+        gas: 500000n,
         abi: governorABI,
         functionName: 'execute',
-        args: [targets, values, calldatas, descriptionHash], // Use event-derived data
+        args: [targets, values, calldatas, descriptionHash],
         chain: currentChain,
         account: address,
         ...gasConfig
       });
-        
-      toast({ 
-        title: "Transaction Submitted", 
-        description: "Execute transaction has been sent to the blockchain." 
-      });
-
-      // Update Supabase state
-      try {
-        await supabase
-          .from('proposals')
-          .update({ state: 'Executed', updated_at: new Date().toISOString() })
-          .eq('proposal_id', id);
-        console.log('Proposal state updated to Executed in database');
-      } catch (dbErr) {
-        console.error('Failed to update proposal state in database:', dbErr);
-        toast({ title: "Database Update Warning", description: "Tx sent, but DB state update failed.", variant: "destructive" });
-      }
-    } catch (err) {
-      console.error('Failed to execute proposal:', err);
-      
-      if (err instanceof Error) {
-        console.error('Error details:', err.message);
-        if (err.message.includes("Governor: proposal not successful")) {
-           setQueueExecuteError("Error: Proposal must be in 'Queued' state and the timelock delay must have passed.");
-         } else if (err.message.includes("Governor: unknown proposal id")) {
-           setQueueExecuteError("Error: Unknown proposal ID. Event log might be incorrect or contract state changed.");
-         } else if (err.message.includes("TimelockController:")) {
-           setQueueExecuteError(`Error from Timelock Controller: ${err.message}`);
-         } else {
-           setQueueExecuteError(err.message);
-         }
+    } catch (prepareErr) {
+      // Catch errors from event fetching or state/ETA checks
+      console.error('Error during handleExecute preparation:', prepareErr);
+      if (prepareErr instanceof Error) {
+        // More specific error handling based on common issues
+        if (prepareErr.message.includes("Timelock delay has not passed")) {
+          setQueueExecuteError("Error: Timelock delay has not passed. Execution not available.");
+          toast({ title: "Execution Error", description: "Timelock delay has not passed. Execution not available.", variant: "destructive" });
+        } else {
+          setQueueExecuteError(prepareErr.message);
+          toast({ title: "Execution Error", description: prepareErr.message, variant: "destructive" });
+        }
       } else {
-         setQueueExecuteError('Failed to execute proposal: Unknown error');
+        const errorMsg = 'Failed to prepare execute transaction: Unknown error';
+        setQueueExecuteError(errorMsg);
+        toast({ title: "Execution Error", description: errorMsg, variant: "destructive" });
       }
-      toast({ title: "Error", description: err instanceof Error ? err.message : 'Failed to execute proposal', variant: "destructive" });
-    } finally {
       setIsExecuting(false);
     }
   };
@@ -1145,6 +1091,79 @@ const ProposalDetail = ({
       setIsSubmitting(false);
     }
   }, [writeError]);
+
+  // Hook to wait for queue/execute transaction confirmation
+  const { isLoading: isConfirming, isSuccess: isConfirmed, error: confirmationError } = useWaitForTransactionReceipt({
+    hash: queueExecuteHash,
+  });
+
+  // Effect to handle transaction confirmation and update database
+  useEffect(() => {
+    if (isConfirmed && queueExecuteHash) {
+      console.log(`Transaction ${queueExecuteHash} confirmed!`);
+      toast({ title: "Transaction Confirmed", description: "Blockchain updated successfully." });
+
+      // Determine the new state based on which action was performed
+      // We need a way to know if it was queue or execute that succeeded
+      // Option 1: Add state variable like `lastAction: 'queue' | 'execute' | null`
+      // Option 2: Infer from current proposal state (less reliable if UI state is stale)
+      // Let's assume we can infer for now, but Option 1 is better.
+      const currentStateNum = Number(state);
+      let newStateText: string | null = null;
+      if (currentStateNum === 4) { // If current state was Succeeded, the action was queue
+          newStateText = getProposalState(5); // Queued
+      } else if (currentStateNum === 5) { // If current state was Queued, the action was execute
+          newStateText = getProposalState(7); // Executed
+      }
+
+      if (newStateText && proposalData) {
+        console.log(`Updating database state to ${newStateText} after confirmation.`);
+        supabase
+          .from('proposals')
+          .update({ state: newStateText, updated_at: new Date().toISOString() })
+          .eq('proposal_id', proposalData.proposal_id) // Use the correct ID from loaded data
+          .then(({ error: dbError }) => {
+            if (dbError) {
+              console.error('Failed to update database state after confirmation:', dbError);
+              toast({ title: "DB Sync Error", description: "Transaction confirmed, but database update failed.", variant: "destructive" });
+            } else {
+              console.log("Database state updated successfully after confirmation.");
+              // Optionally force re-fetch proposal data to update UI state
+              // fetchProposalData();
+            }
+          });
+      } else {
+          console.warn("Could not determine new state or proposalData missing, skipping DB update after confirmation.");
+      }
+
+      // Reset button states and hash
+      setIsQueueing(false);
+      setIsExecuting(false);
+      setQueueExecuteHash(undefined);
+
+    } else if (confirmationError && queueExecuteHash) {
+      console.error(`Transaction ${queueExecuteHash} failed to confirm:`, confirmationError);
+      toast({ title: "Transaction Failed", description: confirmationError.message, variant: "destructive" });
+      setQueueExecuteError(`Transaction Failed: ${confirmationError.message}`);
+      // Reset button states and hash
+      setIsQueueing(false);
+      setIsExecuting(false);
+      setQueueExecuteHash(undefined);
+    }
+  }, [isConfirmed, confirmationError, queueExecuteHash, state, proposalData]); // Add dependencies
+
+  // Effect to capture the transaction hash after writeContract is called
+  useEffect(() => {
+    if (txHash) {
+      console.log("Transaction submitted, hash:", txHash);
+      setQueueExecuteHash(txHash);
+      // Reset isQueueing/isExecuting here as isWritePending will become false,
+      // and isConfirming will take over the loading state.
+      // We check which button was active to reset the correct one.
+      if (isQueueing) setIsQueueing(false);
+      if (isExecuting) setIsExecuting(false);
+    }
+  }, [txHash]); // Dependency on txHash
 
   if (isLoading) return <div>Loading...</div>;
   if (error) return <div>Error: {error}</div>;
@@ -1262,9 +1281,9 @@ const ProposalDetail = ({
                         {voteStatus || "Processing vote..."}
                       </p>
                       {/* Show transaction status if available */}
-                      {voteHash && (
+                      {queueExecuteHash && (
                         <p className="text-xs text-blue-600 mt-2">
-                          Transaction: {voteHash.slice(0, 10)}...{voteHash.slice(-8)}
+                          Transaction: {queueExecuteHash.slice(0, 10)}...{queueExecuteHash.slice(-8)}
                         </p>
                       )}
                     </div>
@@ -1498,6 +1517,13 @@ const ProposalDetail = ({
            )}
          </div>
        )}
+
+      {/* Display View Count */}
+      {proposalData?.views_count !== undefined && (
+        <div className="text-sm text-gray-500 mt-2 text-right">
+          Views: {proposalData.views_count}
+        </div>
+      )}
     </div>
   );
 };
