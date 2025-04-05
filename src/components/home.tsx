@@ -43,7 +43,7 @@ const Home = () => {
 
         {/* Active Proposals Section */}
         <section className="py-6">
-          <ActiveProposalsList title="Active Proposals" showFilters={false} />
+          <ActiveProposalsList title="Active Proposals" showFilters={false} limit={3} />
         </section>
 
         {/* Call to Action */}
