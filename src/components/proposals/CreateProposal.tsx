@@ -241,7 +241,7 @@ const CreateProposal = ({
               let supabaseValues: string[] = [];
               let supabaseCalldatas: string[] = [];
 
-              if (formValues.category === 'treasury' && formValues.actions) {
+              if (formValues.actions) {
                   supabaseTargets = formValues.actions.map(action => action.target);
                   supabaseValues = formValues.actions.map(action => action.value); // Already strings from form
                   supabaseCalldatas = formValues.actions.map(action => action.calldata);
@@ -607,7 +607,7 @@ const CreateProposal = ({
       fullDescription: "",
       category: "",
       votingPeriod: "",
-      actions: [{ target: '', value: '0', calldata: '0x' }], // Start with one empty action by default for treasury
+      actions: [{ target: '', value: '0', calldata: '0x' }], // Start with one empty action by default
     }
   });
 
@@ -649,14 +649,14 @@ const CreateProposal = ({
       setError(null);
       
       // Remove dummy values and require at least one action
-      if (formData.actions?.length === 0) {
+      if (!formData.actions || formData.actions.length === 0) {
         throw new Error("At least one action is required for the proposal");
       }
 
       // Always use actual proposal parameters
-      const targets = formData.actions?.map(action => action.target) as `0x${string}`[] || [];
-      const values = formData.actions?.map(action => BigInt(action.value)) || [];
-      const calldatas = formData.actions?.map(action => action.calldata) as `0x${string}`[] || [];
+      const targets = formData.actions.map(action => action.target) as `0x${string}`[];
+      const values = formData.actions.map(action => BigInt(action.value));
+      const calldatas = formData.actions.map(action => action.calldata) as `0x${string}`[];
 
       // Combine description and fullDescription for on-chain storage
       const fullProposalText = `# ${formData.title}\n\n## Summary\n${formData.summary}\n\n## Description\n${formData.description}\n\n## Full Description\n${formData.fullDescription}`;
@@ -915,12 +915,12 @@ const CreateProposal = ({
               </CardContent>
             </Card>
 
-            {form.watch("category") === "treasury" && (
+            {form.watch("category") && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Treasury Actions</CardTitle>
+                  <CardTitle>{form.watch("category").charAt(0).toUpperCase() + form.watch("category").slice(1)} Actions</CardTitle>
                   <CardDescription>
-                    Specify the treasury interactions for this proposal
+                    Specify the actions for this {form.watch("category")} proposal
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -950,8 +950,12 @@ const CreateProposal = ({
                               <Input
                                 placeholder="0x... contract address"
                                 {...field}
+                                disabled={true} // Disabled as it's auto-populated by ActionBuilder
                               />
                             </FormControl>
+                            <FormDescription>
+                              Auto-populated based on action type
+                            </FormDescription>
                             <FormMessage />
                           </FormItem>
                         )}
@@ -962,30 +966,16 @@ const CreateProposal = ({
                         name={`actions.${index}.value`}
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Value (in KLC)</FormLabel>
+                            <FormLabel>Value (in Wei)</FormLabel>
                             <FormControl>
                               <Input
-                                type="number" // Input type number for better UX
-                                placeholder="Amount of KLC to send (e.g., 100)"
-                                value={field.value === '0' ? '' : ethers.utils.formatEther(field.value || '0')} // Display in KLC
-                                onChange={(e) => {
-                                  const displayValue = e.target.value;
-                                  // Convert KLC back to Wei string for the form state
-                                  try {
-                                    const weiValue = displayValue ? ethers.utils.parseEther(displayValue).toString() : '0';
-                                    field.onChange(weiValue);
-                                  } catch {
-                                    // Handle invalid input if needed, or let zod validation catch it
-                                    field.onChange('invalid'); // Or keep previous value
-                                  }
-                                }}
-                                onBlur={field.onBlur} // Keep other field props
-                                ref={field.ref}
-                                name={field.name}
+                                placeholder="0"
+                                {...field}
+                                disabled={true}
                               />
                             </FormControl>
                             <FormDescription>
-                               Amount in KLC (will be converted to Wei: {field.value || '0'} Wei)
+                              Set to 0 for most actions (auto-populated)
                             </FormDescription>
                             <FormMessage />
                           </FormItem>
@@ -997,16 +987,14 @@ const CreateProposal = ({
                         name={`actions.${index}.calldata`}
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Action Type & Calldata</FormLabel> {/* Updated Label */}
+                            <FormLabel>Action Type & Calldata</FormLabel>
                             <FormControl>
-                              {/* Replace Textarea with ActionBuilder */}
                               <ActionBuilder
                                 field={field}
                                 actionIndex={index}
                                 updateActionFields={updateActionFields}
                               />
                             </FormControl>
-                            {/* Removed redundant description, ActionBuilder has its own */}
                             <FormMessage />
                           </FormItem>
                         )}
