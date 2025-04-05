@@ -50,8 +50,12 @@ import { getTransactionGasConfig } from '@/blockchain/config/transaction';
 import { kalyChainMainnet, kalyChainTestnet } from '@/blockchain/config/chains';
 import { CountdownTimer } from './CountdownTimer';
 import { toast } from "@/components/ui/use-toast";
-import { type Abi, type AbiEvent, decodeEventLog } from 'viem';
+import { type Abi, type AbiEvent, decodeEventLog, parseGwei } from 'viem';
 import { type Hash } from 'viem';
+
+// ProposalDetail component with simplified execution and queue mechanisms
+// Uses a direct approach with single transactions and enhanced logging
+// Removed retry mechanisms and multiple transaction attempts
 
 interface DecodedProposalCreatedArgs {
   proposalId?: bigint;
@@ -212,6 +216,7 @@ const ProposalDetail = ({
   const [queueExecuteError, setQueueExecuteError] = useState<string | null>(null);
   const [queueExecuteHash, setQueueExecuteHash] = useState<Hash | undefined>();
   const [voteStatus, setVoteStatus] = useState<string | null>(null);
+  const [refetchKey, setRefetchKey] = useState<number>(0);
   
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
@@ -314,16 +319,27 @@ const ProposalDetail = ({
     }
   });
 
+  // Read proposal state for execution verification
+  const { data: proposalState, refetch: refetchProposalState } = useReadContract({
+    address: governorAddress as `0x${string}`,
+    abi: governorABI,
+    functionName: 'state',
+    args: id ? [BigInt(id)] : undefined,
+    chainId,
+    account: address,
+    query: { enabled: !!id }
+  });
+
   // Read proposalEta (timestamp when it can be executed)
   const { data: proposalEta } = useReadContract({
      address: governorAddress as `0x${string}`,
      abi: governorABI,
      functionName: 'proposalEta',
-     args: [BigInt(id || '0')],
+     args: id ? [BigInt(id)] : undefined,
      chainId,
      account: address,
      query: {
-       enabled: Number(state) === 5,
+       enabled: !!id && Number(state) === 5,
      }
   });
 
@@ -726,13 +742,13 @@ const ProposalDetail = ({
     return numericState === 1 && isVotingPeriod;
   };
 
-  // Add a utility function to check proposal state
-  const checkProposalState = async () => {
-    if (!id) return null;
-    
+  // Keep checkProposalState function 
+  const checkProposalState = async (proposalId: string): Promise<number | null> => {
+    // Implementation simplified to avoid multi-RPC calls
     try {
-      console.log(`Checking state for proposal ID ${id} on-chain...`);
-      setQueueExecuteError("Checking proposal state...");
+      if (!governorAddress) return null;
+      
+      console.log(`Checking state for proposal ID ${proposalId} on-chain...`);
       
       // Create a provider
       const provider = new ethers.providers.JsonRpcProvider(
@@ -746,12 +762,11 @@ const ProposalDetail = ({
         provider
       );
       
-      // Call state function directly
-      const state = await governor.state(id);
+      // Call state function
+      const state = await governor.state(proposalId.toString());
       const stateNumber = Number(state);
-      const stateName = getProposalState(stateNumber);
       
-      console.log(`Proposal state on-chain: ${stateNumber} (${stateName})`);
+      console.log(`Proposal state on-chain: ${stateNumber} (${getProposalState(stateNumber)})`);
       
       return stateNumber;
     } catch (err) {
@@ -760,7 +775,7 @@ const ProposalDetail = ({
     }
   };
 
-  // Define the ProposalCreated event ABI fragment explicitly
+  // Keep proposalCreatedEventAbi definition
   const proposalCreatedEventAbi: AbiEvent = {
       anonymous: false,
       inputs: [
@@ -777,311 +792,6 @@ const ProposalDetail = ({
       name: "ProposalCreated",
       type: "event"
     };
-
-  // Handle Queue - Refactored to use ProposalCreated event data
-  const handleQueue = async () => {
-    if (!writeContract || !id || !publicClient || !governorAddress) return;
-
-    setIsQueueing(true);
-    setQueueExecuteError(null);
-
-    try {
-      console.log("Starting queue operation for proposal ID:", id);
-      
-      // --- Fetch Original Proposal Parameters from Event Log ---
-      let targets: `0x${string}`[];
-      let values: bigint[];
-      let calldatas: `0x${string}`[];
-      let description: string;
-      let descriptionHash: `0x${string}`;
-
-      try {
-        console.log(`Fetching ProposalCreated event logs for Governor: ${governorAddress}`);
-        
-        // OPTIMIZATION: Store proposal creation block_number in Supabase
-        // and use it here as `fromBlock` for much faster lookup.
-        // As a fallback, query the last ~1 million blocks (adjust as needed).
-        const latestBlock = await publicClient.getBlockNumber();
-        const fromBlockEst = latestBlock > 1_000_000n ? latestBlock - 1_000_000n : 0n;
-
-        console.log(`Querying logs from block ${fromBlockEst} to ${latestBlock}`);
-
-        const logs = await publicClient.getLogs({
-          address: governorAddress,
-          event: proposalCreatedEventAbi,
-          fromBlock: fromBlockEst,
-          toBlock: 'latest'
-        });
-
-        console.log(`Found ${logs.length} ProposalCreated event logs.`);
-
-        const matchingLog = logs.find(log => {
-          try {
-            const decodedLogItem = decodeEventLog({ abi: [proposalCreatedEventAbi], data: log.data, topics: log.topics });
-            // Use type guard
-            if (hasProposalCreatedArgs(decodedLogItem)) {
-               return decodedLogItem.args.proposalId?.toString() === id;
-            }
-            return false;
-          } catch (decodeErr) {
-            console.warn("Failed to decode a log:", decodeErr);
-            return false;
-          }
-        });
-
-        if (!matchingLog) {
-          throw new Error(`ProposalCreated event log not found for proposal ID ${id}. Cannot verify parameters.`);
-        }
-
-        // Decode the specific log we found
-        const decodedEvent = decodeEventLog({
-          abi: [proposalCreatedEventAbi],
-          data: matchingLog.data,
-          topics: matchingLog.topics
-        });
-
-        // Use type guard
-        if (!hasProposalCreatedArgs(decodedEvent)) {
-          throw new Error("Failed to decode args from the found ProposalCreated event log.");
-        }
-
-        const args = decodedEvent.args; // Typed args
-        
-        console.log("Decoded ProposalCreated event args:", args);
-
-        // Validate required fields exist using the typed args
-        if (!Array.isArray(args.targets) || !Array.isArray(args.values) || !Array.isArray(args.calldatas) || typeof args.description !== 'string') {
-           throw new Error("Decoded event log is missing required parameters (targets, values, calldatas, description).");
-        }
-
-        // Extract parameters directly from the typed args
-        targets = [...args.targets]; // Convert readonly array to mutable if needed
-        values = [...args.values].map(BigInt); // Convert readonly, ensure BigInt
-        calldatas = [...args.calldatas]; // Convert readonly
-        description = args.description;
-
-        // Calculate descriptionHash from the event's description
-        descriptionHash = ethers.utils.id(description) as `0x${string}`;
-        
-        console.log('Parameters obtained from ProposalCreated event:', {
-          targets,
-          values: values.map(v => v.toString()), // Log as string for readability
-          calldatas,
-          description, // Log the description used for the hash
-          descriptionHash
-        });
-
-      } catch (eventError: any) {
-        console.error("Error fetching or processing ProposalCreated event:", eventError);
-        setQueueExecuteError(`Error fetching event data: ${eventError.message || String(eventError)}`);
-        toast({ title: "Event Fetch Error", description: "Could not retrieve original proposal parameters.", variant: "destructive" });
-        setIsQueueing(false);
-        return;
-      }
-      // --- End Fetch Original Proposal Parameters ---
-
-      console.log("✅ Successfully fetched and processed event parameters.");
-
-      // Check the current on-chain state before proceeding
-      try {
-        const stateResult = await checkProposalState();
-        if (stateResult !== 4) { // 4 = Succeeded
-          throw new Error(`Proposal must be in Succeeded state to queue. Current state: ${getProposalState(stateResult)}`);
-        }
-        console.log("✅ Proposal is in correct state (Succeeded) for queueing");
-      } catch (stateErr) {
-        console.error("Failed to verify proposal state:", stateErr);
-        // Potentially continue, let the contract validate state
-      }
-      
-      toast({ title: "Queueing Proposal", description: "Please confirm the transaction in your wallet." });
-      
-      // Get transaction gas config
-      const gasConfig = getTransactionGasConfig();
-
-      // Log the exact values we're sending to the contract (using event data)
-      console.log('Exact hex inputs to contract (from event data):', {
-        targetsHex: targets.map(t => t.toLowerCase()),
-        valuesHex: values.map(v => `0x${v.toString(16)}`),
-        calldatasHex: calldatas,
-        descriptionHashHex: descriptionHash
-      });
-
-      // If preparation succeeded, call writeContract
-      writeContract({
-        address: governorAddress as `0x${string}`,
-        abi: governorABI,
-        functionName: 'queue',
-        args: [targets, values, calldatas, descriptionHash], // Use event-derived data
-        chain: currentChain,
-        account: address,
-        ...gasConfig // Apply gas settings
-      });
-    } catch (prepareErr) {
-      // Catch errors from event fetching or state checks
-      console.error('Error during handleQueue preparation:', prepareErr); 
-       if (prepareErr instanceof Error) {
-         setQueueExecuteError(prepareErr.message);
-         toast({ title: "Queue Error", description: prepareErr.message, variant: "destructive" });
-       } else {
-         const errorMsg = 'Failed to prepare queue transaction: Unknown error';
-         setQueueExecuteError(errorMsg);
-         toast({ title: "Error", description: errorMsg, variant: "destructive" });
-       }
-       setIsQueueing(false); // Ensure loading state is reset
-    } 
-  };
-
-  // Handle Execute - Refactored to use ProposalCreated event data
-  const handleExecute = async () => {
-    if (!writeContract || !id || !publicClient || !governorAddress) return;
-
-    setIsExecuting(true);
-    setQueueExecuteError(null);
-
-    try {
-      console.log("Starting execute operation for proposal ID:", id);
-      
-      // --- Fetch Original Proposal Parameters from Event Log ---
-      let targets: `0x${string}`[];
-      let values: bigint[];
-      let calldatas: `0x${string}`[];
-      let description: string;
-      let descriptionHash: `0x${string}`;
-
-      try {
-        console.log(`Fetching ProposalCreated event logs for Governor: ${governorAddress}`);
-        
-        // OPTIMIZATION: Store proposal creation block_number in Supabase
-        // and use it here as `fromBlock` for much faster lookup.
-        // As a fallback, query the last ~1 million blocks (adjust as needed).
-        const latestBlockExe = await publicClient.getBlockNumber();
-        const fromBlockEstExe = latestBlockExe > 1_000_000n ? latestBlockExe - 1_000_000n : 0n;
-
-        console.log(`Querying logs from block ${fromBlockEstExe} to ${latestBlockExe} for execution`);
-
-        const logs = await publicClient.getLogs({
-          address: governorAddress,
-          event: proposalCreatedEventAbi,
-          fromBlock: fromBlockEstExe,
-          toBlock: 'latest'
-        });
-
-        console.log(`Found ${logs.length} ProposalCreated event logs for execution.`);
-
-        const matchingLog = logs.find(log => {
-          try {
-            const decodedLogItem = decodeEventLog({ abi: [proposalCreatedEventAbi], data: log.data, topics: log.topics });
-            // Use type guard
-            if (hasProposalCreatedArgs(decodedLogItem)) {
-               return decodedLogItem.args.proposalId?.toString() === id;
-            }
-            return false;
-          } catch { return false; }
-        });
-
-        if (!matchingLog) {
-          throw new Error(`ProposalCreated event log not found for proposal ID ${id}.`);
-        }
-
-        const decodedEvent = decodeEventLog({ abi: [proposalCreatedEventAbi], data: matchingLog.data, topics: matchingLog.topics });
-
-        // Use type guard
-        if (!hasProposalCreatedArgs(decodedEvent)) {
-          throw new Error("Failed to decode args from the found ProposalCreated event log for execution.");
-        }
-        
-        const args = decodedEvent.args; // Typed args
-
-        if (!Array.isArray(args.targets) || !Array.isArray(args.values) || !Array.isArray(args.calldatas) || typeof args.description !== 'string') {
-           throw new Error("Decoded event log is missing required parameters for execution.");
-        }
-
-        targets = [...args.targets];
-        values = [...args.values].map(BigInt);
-        calldatas = [...args.calldatas];
-        description = args.description;
-        descriptionHash = ethers.utils.id(description) as `0x${string}`;
-        
-        console.log('Parameters obtained from ProposalCreated event for execution:', {
-          targets,
-          values: values.map(v => v.toString()),
-          calldatas,
-          description,
-          descriptionHash
-        });
-      } catch (eventError: any) {
-        console.error("Error fetching or processing ProposalCreated event for execution:", eventError);
-        setQueueExecuteError(`Error fetching event data: ${eventError.message || String(eventError)}`);
-        toast({ title: "Event Fetch Error", description: "Could not retrieve original proposal parameters.", variant: "destructive" });
-        setIsExecuting(false);
-        return;
-      }
-      // --- End Fetch Original Proposal Parameters ---
-
-      console.log("✅ Successfully fetched and processed event parameters for execution.");
-
-      // Check state (Queued - 5) and ETA
-      try {
-         const stateResult = await checkProposalState();
-         if (stateResult !== 5) { // 5 = Queued
-           throw new Error(`Proposal must be in Queued state to execute. Current state: ${getProposalState(stateResult)}`);
-         }
-         // Add ETA check if needed based on proposalEta state variable
-         if (proposalEta && Date.now() / 1000 < Number(proposalEta)) {
-            throw new Error(`Timelock delay has not passed yet. Execution available after ${new Date(Number(proposalEta) * 1000).toLocaleString()}`);
-         }
-         console.log("✅ Proposal state and ETA checks passed for execution.");
-      } catch (stateErr: any) {
-        console.error("Failed to verify proposal state/ETA for execution:", stateErr);
-        setQueueExecuteError(`Pre-execution Check Failed: ${stateErr.message}`);
-        toast({ title: "Pre-Execution Check Failed", description: stateErr.message, variant: "destructive" });
-        setIsExecuting(false);
-        return;
-      }
-
-      toast({ title: "Executing Proposal", description: "Please confirm the transaction in your wallet." });
-      
-      const gasConfig = getTransactionGasConfig();
-
-      console.log('Exact hex inputs to contract (from event data):', {
-        targetsHex: targets.map(t => t.toLowerCase()),
-        valuesHex: values.map(v => `0x${v.toString(16)}`),
-        calldatasHex: calldatas,
-        descriptionHashHex: descriptionHash
-      });
-
-      // If preparation succeeded, call writeContract
-      writeContract({
-        address: governorAddress as `0x${string}`,
-        gas: 500000n,
-        abi: governorABI,
-        functionName: 'execute',
-        args: [targets, values, calldatas, descriptionHash],
-        chain: currentChain,
-        account: address,
-        ...gasConfig
-      });
-    } catch (prepareErr) {
-      // Catch errors from event fetching or state/ETA checks
-      console.error('Error during handleExecute preparation:', prepareErr);
-      if (prepareErr instanceof Error) {
-        // More specific error handling based on common issues
-        if (prepareErr.message.includes("Timelock delay has not passed")) {
-          setQueueExecuteError("Error: Timelock delay has not passed. Execution not available.");
-          toast({ title: "Execution Error", description: "Timelock delay has not passed. Execution not available.", variant: "destructive" });
-        } else {
-          setQueueExecuteError(prepareErr.message);
-          toast({ title: "Execution Error", description: prepareErr.message, variant: "destructive" });
-        }
-      } else {
-        const errorMsg = 'Failed to prepare execute transaction: Unknown error';
-        setQueueExecuteError(errorMsg);
-        toast({ title: "Execution Error", description: errorMsg, variant: "destructive" });
-      }
-      setIsExecuting(false);
-    }
-  };
 
   // Track write errors
   useEffect(() => {
@@ -1165,6 +875,810 @@ const ProposalDetail = ({
     }
   }, [txHash]); // Dependency on txHash
 
+  // Regular functions that we're keeping
+  const handleQueue = async () => {
+    if (!writeContract || !id || !governorAddress || !address) {
+      console.error('Missing required data for queue', { writeContract, id, governorAddress });
+      return;
+    }
+
+    setIsQueueing(true);
+    setQueueExecuteError(null);
+    
+    try {
+      console.log('Queueing proposal', id);
+      
+      // Get parameters from proposalData and convert to the correct types
+      const targets = (proposalData?.targets || []).map(t => t as `0x${string}`);
+      const values = (proposalData?.values || []).map(v => BigInt(v));
+      const calldatas = (proposalData?.calldatas || []).map(c => c as `0x${string}`);
+      
+      // Get the ORIGINAL full description text (not the hash)
+      const descriptionText = proposalData?.full_description || 
+        `${proposalData?.title}\n\n${proposalData?.description}`;
+      
+      // Calculate the keccak256 hash of the description using ethers
+      // This is what the contract uses internally for hashProposal
+      const descriptionHash = ethers.utils.keccak256(
+        ethers.utils.toUtf8Bytes(descriptionText)
+      ) as `0x${string}`;
+      
+      console.log('Queue parameters:', {
+        targets,
+        values,
+        calldatas,
+        descriptionHash,
+        descriptionText: descriptionText.substring(0, 100) + '...' // Log part of the text
+      });
+
+      // Get transaction gas config from the shared utility
+      const gasConfig = getTransactionGasConfig();
+      console.log('Using gas config:', gasConfig);
+
+      // Use the standard wagmi pattern that works in other components
+      writeContract({
+        address: governorAddress as `0x${string}`,
+        abi: governorABI,
+        functionName: 'queue',
+        args: [targets, values, calldatas, descriptionHash],
+        chain: currentChain,
+        account: address,
+        ...gasConfig
+      });
+
+      console.log('Queue transaction initiated');
+      
+      toast({
+        title: 'Proposal Queued',
+        description: 'The transaction has been submitted.',
+      });
+      
+      // Note: txHash will be set by the useEffect that watches for txHash changes
+      setRefetchKey(prev => prev + 1);
+    } catch (error: any) {
+      console.error('Error queueing proposal:', error);
+      setQueueExecuteError(error?.message || 'An error occurred while queueing the proposal');
+      
+      toast({
+        title: 'Queue Failed',
+        description: error?.message || 'An error occurred while queueing the proposal',
+        variant: 'destructive',
+      });
+      setIsQueueing(false);
+    }
+  };
+
+  const handleExecute = async () => {
+    if (!writeContract || !id || !governorAddress || !address) {
+      console.error('Missing required data for execution', { writeContract, id, governorAddress });
+      return;
+    }
+
+    setIsExecuting(true);
+    setQueueExecuteError(null);
+    
+    try {
+      // Refresh the state to make sure we have the latest data
+      await refetchProposalState?.();
+      
+      // Check proposal state using the data from the hook
+      if (proposalState !== undefined && Number(proposalState) !== 5) { // 5 = Queued
+        const stateMessage = `Current state: ${getProposalState(Number(proposalState))} (${proposalState})`;
+        console.error(`Proposal not in Queued state. ${stateMessage}`);
+        throw new Error(`Invalid proposal state: ${stateMessage}. Must be Queued (5).`);
+      }
+
+      // Check timelock delay using the data from the hook
+      if (proposalEta && Date.now() / 1000 < Number(proposalEta)) {
+        throw new Error('Timelock delay has not passed yet');
+      }
+
+      console.log('Executing proposal', id);
+      
+      // Get parameters from proposalData and convert to the correct types
+      const targets = (proposalData?.targets || []).map(t => t as `0x${string}`);
+      const values = (proposalData?.values || []).map(v => BigInt(v));
+      const calldatas = (proposalData?.calldatas || []).map(c => c as `0x${string}`);
+      
+      // Get the ORIGINAL full description text (not the hash)
+      const descriptionText = proposalData?.full_description || 
+        `${proposalData?.title}\n\n${proposalData?.description}`;
+      
+      // Calculate the keccak256 hash of the description using ethers
+      // This is what the contract uses internally for hashProposal
+      const descriptionHash = ethers.utils.keccak256(
+        ethers.utils.toUtf8Bytes(descriptionText)
+      ) as `0x${string}`;
+      
+      console.log('Execute parameters:', {
+        targets,
+        values,
+        calldatas,
+        descriptionHash: descriptionHash,
+        descriptionText: descriptionText.substring(0, 100) + '...' // Log part of the text
+      });
+
+      // Get transaction gas config from the shared utility
+      const gasConfig = getTransactionGasConfig();
+      console.log('Using gas config:', gasConfig);
+
+      // Use the standard wagmi pattern that works in other components
+      writeContract({
+        address: governorAddress as `0x${string}`,
+        abi: governorABI,
+        functionName: 'execute',
+        args: [targets, values, calldatas, descriptionHash],
+        chain: currentChain,
+        account: address,
+        ...gasConfig
+      });
+
+      console.log('Execute transaction initiated');
+      
+      toast({
+        title: 'Proposal Execution',
+        description: 'The transaction has been submitted.',
+      });
+      
+      // Note: txHash will be set by the useEffect that watches for txHash changes
+      setRefetchKey(prev => prev + 1);
+    } catch (error: any) {
+      console.error('Error executing proposal:', error);
+      setQueueExecuteError(error?.message || 'An error occurred while executing the proposal');
+      
+      toast({
+        title: 'Execution Failed',
+        description: error?.message || 'An error occurred while executing the proposal',
+        variant: 'destructive',
+      });
+      setIsExecuting(false);
+    }
+  };
+
+  // Add a manual execution fallback function that uses ethers.js directly
+  const executeManually = async (
+    targets: `0x${string}`[],
+    values: bigint[],
+    calldatas: `0x${string}`[],
+    descriptionHash: string
+  ) => {
+    try {
+      if (!governorAddress || !address) return;
+      
+      console.log("=== MANUAL EXECUTION DEBUG MODE ===");
+      console.log("Using ethers.js to directly call the contract...");
+      
+      // Create provider and signer
+      const provider = new ethers.providers.Web3Provider(window.ethereum);
+      const signer = provider.getSigner(address);
+      
+      // Create contract instance
+      const governorContract = new ethers.Contract(
+        governorAddress,
+        governorABI,
+        signer
+      );
+      
+      // Convert parameters to proper format for ethers.js
+      const targetAddresses = targets.map(t => t.toString());
+      const valuesBigNumber = values.map(v => ethers.BigNumber.from(v.toString()));
+      const calldata = calldatas.map(c => c.toString());
+      
+      console.log("Calling execute function directly with parameters:");
+      console.log("- targets:", targetAddresses);
+      console.log("- values:", valuesBigNumber.map(v => v.toString()));
+      console.log("- calldatas:", calldata);
+      console.log("- descriptionHash:", descriptionHash);
+      
+      // Specify higher gas limit
+      const tx = await governorContract.execute(
+        targetAddresses,
+        valuesBigNumber,
+        calldata,
+        descriptionHash,
+        {
+          gasLimit: 3000000,
+          gasPrice: ethers.utils.parseUnits('2', 'gwei')
+        }
+      );
+      
+      console.log("Manual transaction submitted:", tx.hash);
+      return tx.hash;
+    } catch (err) {
+      console.error("Error in manual execution:", err);
+      const errorMessage = err.message || String(err);
+      
+      // Special handling for specific errors
+      if (errorMessage.includes("unknown proposal id")) {
+        console.error("FOUND 'unknown proposal id' ERROR IN MANUAL EXECUTION");
+        toast({ 
+          title: "ERROR: Unknown Proposal ID", 
+          description: "The contract could not find this proposal ID on-chain.",
+          variant: "destructive"
+        });
+      } else if (errorMessage.includes("TimelockController")) {
+        console.error("FOUND TIMELOCK CONTROLLER ERROR IN MANUAL EXECUTION");
+        toast({ 
+          title: "ERROR: Timelock Issue", 
+          description: errorMessage,
+          variant: "destructive"
+        });
+      }
+      
+      throw err;
+    }
+  };
+  
+  // Add a helper function to check if a proposal exists directly
+  const checkProposalExistsDirectly = async (proposalId: string) => {
+    if (!governorAddress) {
+      toast({ 
+        title: "Error", 
+        description: "Governor contract address not found", 
+        variant: "destructive" 
+      });
+      return;
+    }
+    
+    setQueueExecuteError("Checking proposal existence on-chain...");
+    
+    try {
+      // Use ethers.js to call directly
+      const provider = new ethers.providers.JsonRpcProvider(
+        currentChain?.rpcUrls.default.http[0]
+      );
+      
+      const governor = new ethers.Contract(
+        governorAddress,
+        governorABI,
+        provider
+      );
+      
+      try {
+        console.log(`Checking if proposal ${proposalId} exists by calling state()...`);
+        
+        // Try to get the state - will fail if proposal doesn't exist
+        const state = await governor.state(proposalId);
+        const stateNum = Number(state);
+        const stateName = getProposalState(stateNum);
+        
+        console.log(`Proposal EXISTS! State: ${stateNum} (${stateName})`);
+        
+        // Try to get additional info
+        try {
+          const snapshot = await governor.proposalSnapshot(proposalId);
+          console.log(`Snapshot: ${snapshot}`);
+        } catch (err) {
+          console.log("Could not get snapshot");
+        }
+        
+        try {
+          const deadline = await governor.proposalDeadline(proposalId);
+          console.log(`Deadline: ${deadline}`);
+        } catch (err) {
+          console.log("Could not get deadline");
+        }
+        
+        // Success!
+        setQueueExecuteError(`Proposal FOUND on-chain! State: ${stateName} (${stateNum})`);
+        toast({ 
+          title: "Proposal Exists", 
+          description: `State: ${stateName}`, 
+          variant: "default"
+        });
+        
+        return true;
+      } catch (err) {
+        console.error("Error checking proposal:", err);
+        
+        if (err.message?.includes("unknown proposal id")) {
+          console.error(`Proposal ${proposalId} does NOT exist on-chain!`);
+          setQueueExecuteError(`Proposal ID ${proposalId} NOT FOUND on-chain! Error: unknown proposal id`);
+          toast({ 
+            title: "Proposal Not Found", 
+            description: "This proposal ID does not exist on-chain", 
+            variant: "destructive" 
+          });
+        } else {
+          setQueueExecuteError(`Error checking proposal: ${err.message || String(err)}`);
+          toast({ 
+            title: "Error", 
+            description: err.message || "Unknown error checking proposal", 
+            variant: "destructive" 
+          });
+        }
+        
+        return false;
+      }
+    } catch (err) {
+      console.error("Provider or contract error:", err);
+      setQueueExecuteError(`Provider error: ${err.message || String(err)}`);
+      toast({ 
+        title: "Network Error", 
+        description: "Could not connect to blockchain", 
+        variant: "destructive" 
+      });
+      return false;
+    }
+  };
+
+  // Add function to directly calculate proposal ID using contract
+  const calculateProposalIdFromContract = async () => {
+    if (!governorAddress || !proposalData?.targets || !proposalData?.values || !proposalData?.calldatas) {
+      toast({ 
+        title: "Missing Data", 
+        description: "Proposal data is incomplete", 
+        variant: "destructive" 
+      });
+      return;
+    }
+    
+    setQueueExecuteError("Calculating proposal ID from contract...");
+    
+    try {
+      // Use ethers.js to call directly
+      const provider = new ethers.providers.JsonRpcProvider(
+        currentChain?.rpcUrls.default.http[0]
+      );
+      
+      const governor = new ethers.Contract(
+        governorAddress,
+        governorABI,
+        provider
+      );
+      
+      // Convert parameters
+      const targets = proposalData.targets.map(t => t);
+      const values = proposalData.values.map(v => ethers.BigNumber.from(v));
+      const calldatas = proposalData.calldatas.map(c => c);
+      
+      // Try different description hash calculations
+      const descriptionOptions = [];
+      
+      // Option 1: Full description
+      if (proposalData.full_description) {
+        descriptionOptions.push({
+          name: "Full Description",
+          text: proposalData.full_description,
+          hash: ethers.utils.id(proposalData.full_description)
+        });
+      }
+      
+      // Option 2: Title + Description
+      const titleAndDesc = `${proposalData.title}\n\n${proposalData.description}`;
+      descriptionOptions.push({
+        name: "Title + Description",
+        text: titleAndDesc,
+        hash: ethers.utils.id(titleAndDesc)
+      });
+      
+      // Option 3: Description only
+      descriptionOptions.push({
+        name: "Description Only",
+        text: proposalData.description,
+        hash: ethers.utils.id(proposalData.description)
+      });
+      
+      // For testing - set different values
+      const hashResults = [];
+      const knownWorkingId = "12408497541758715116290134275497952213534845109460495001490387279328663224184";
+      
+      // Try each description hash
+      for (const option of descriptionOptions) {
+        try {
+          console.log(`\nTrying with ${option.name}:`);
+          console.log(`Description text: "${option.text.substring(0, 50)}..."`);
+          console.log(`Description hash: ${option.hash}`);
+          
+          const calculatedId = await governor.hashProposal(
+            targets,
+            values,
+            calldatas,
+            option.hash
+          );
+          
+          const idMatch = calculatedId.toString() === knownWorkingId;
+          
+          console.log(`Contract calculated ID: ${calculatedId.toString()}`);
+          console.log(`Matches known ID? ${idMatch ? "YES ✓" : "NO ✗"}`);
+          
+          hashResults.push({
+            name: option.name,
+            hash: option.hash,
+            id: calculatedId.toString(),
+            matches: idMatch
+          });
+        } catch (err) {
+          console.error(`Error with ${option.name}:`, err);
+          hashResults.push({
+            name: option.name,
+            hash: option.hash,
+            id: "ERROR",
+            matches: false,
+            error: err.message
+          });
+        }
+      }
+      
+      // Log summary
+      console.log("\n=== HASH CALCULATION SUMMARY ===");
+      hashResults.forEach(result => {
+        console.log(`${result.name}: ${result.id} - ${result.matches ? "MATCH ✓" : "NO MATCH ✗"}`);
+      });
+      
+      // Show results
+      setQueueExecuteError(
+        `Proposal ID Calculation Results:\n` +
+        hashResults.map(r => `${r.name}: ${r.id} - ${r.matches ? "MATCH" : "NO MATCH"}`).join("\n")
+      );
+      
+      // Show toast with best result
+      const bestMatch = hashResults.find(r => r.matches);
+      if (bestMatch) {
+        toast({ 
+          title: "Found Matching ID!", 
+          description: `${bestMatch.name} creates the correct ID`, 
+          variant: "default" 
+        });
+      } else {
+        toast({ 
+          title: "No Match Found", 
+          description: "None of the calculated IDs match the expected ID", 
+          variant: "destructive" 
+        });
+      }
+      
+    } catch (err) {
+      console.error("Error calculating proposal ID:", err);
+      setQueueExecuteError(`Error calculating ID: ${err.message || String(err)}`);
+      toast({ 
+        title: "Calculation Error", 
+        description: err.message || "Unknown error", 
+        variant: "destructive" 
+      });
+    }
+  };
+
+  // Direct raw execution with no transforms whatsoever
+  const executeRawWithUrlId = async () => {
+    if (!governorAddress || !id || !address) {
+      toast({ 
+        title: "Error", 
+        description: "Missing required data (governor, ID, or account)", 
+        variant: "destructive" 
+      });
+      return;
+    }
+    
+    setIsExecuting(true);
+    setQueueExecuteError("Executing with raw ID from URL...");
+    
+    try {
+      // The ID directly from the URL with NO processing/transformation
+      const rawId = id;
+      console.log(`Executing with RAW ID directly from URL: ${rawId}`);
+      
+      // Get proposal data from Supabase
+      if (!proposalData?.targets || !proposalData?.values || !proposalData?.calldatas) {
+        throw new Error("Missing proposal parameter data");
+      }
+      
+      // Convert to correct types with minimal processing
+      const targets = proposalData.targets.map(t => t as `0x${string}`);
+      const values = proposalData.values.map(v => BigInt(v));
+      const calldatas = proposalData.calldatas.map(c => c as `0x${string}`);
+      const descriptionHash = proposalData.full_description 
+        ? ethers.utils.id(proposalData.full_description) as `0x${string}`
+        : ethers.utils.id(`${proposalData.title}\n\n${proposalData.description}`) as `0x${string}`;
+      
+      console.log("=== DIRECT RAW EXECUTION ===");
+      console.log("Using RAW ID from URL with no transformations");
+      console.log("Targets:", targets);
+      console.log("Values:", values.map(v => v.toString()));
+      console.log("Calldatas:", calldatas.map(c => `${c.slice(0, 10)}...${c.slice(-8)}`));
+      console.log("DescriptionHash:", descriptionHash);
+      
+      toast({ 
+        title: "Direct Execution", 
+        description: "Executing with raw ID from URL...", 
+      });
+      
+      // Try BOTH ethers.js and wagmi/viem approaches
+      
+      // 1. First try ethers.js direct call
+      try {
+        const provider = new ethers.providers.Web3Provider(window.ethereum);
+        const signer = provider.getSigner(address);
+        const governor = new ethers.Contract(governorAddress, governorABI, signer);
+        
+        // Convert to ethers.js format
+        const targetAddrs = targets.map(t => t.toString());
+        const valuesBN = values.map(v => ethers.BigNumber.from(v.toString()));
+        const calldata = calldatas.map(c => c.toString());
+        
+        // First check if the proposal exists (read-only call)
+        try {
+          const state = await governor.state(rawId);
+          console.log(`Proposal exists! State: ${state} (${getProposalState(Number(state))})`);
+        } catch (stateErr) {
+          console.error("State check failed:", stateErr.message);
+          if (stateErr.message.includes("unknown proposal id")) {
+            throw new Error("Proposal doesn't exist on this network with this ID");
+          }
+        }
+        
+        // Execute directly
+        const tx = await governor.execute(
+          targetAddrs,
+          valuesBN,
+          calldata,
+          descriptionHash,
+          {
+            gasLimit: 3000000,
+            gasPrice: ethers.utils.parseUnits('2', 'gwei')
+          }
+        );
+        
+        console.log("Raw execution transaction submitted:", tx.hash);
+        toast({ 
+          title: "Transaction Submitted", 
+          description: `Tx: ${tx.hash.slice(0, 10)}...${tx.hash.slice(-6)}`,
+        });
+        return; // Success!
+      } catch (ethersErr) {
+        console.error("Ethers.js execution failed:", ethersErr);
+        console.log("Falling back to wagmi/viem...");
+      }
+      
+      // 2. Fallback to wagmi/viem if ethers.js fails
+      writeContract({
+        address: governorAddress as `0x${string}`,
+        gas: 3000000n,
+        gasPrice: BigInt(Math.floor(2 * 1e9)),
+        abi: governorABI,
+        functionName: 'execute',
+        args: [targets, values, calldatas, descriptionHash],
+        chain: currentChain,
+        account: address,
+      });
+      
+    } catch (err) {
+      console.error("Raw execution error:", err);
+      setQueueExecuteError(`Raw execution error: ${err.message || String(err)}`);
+      toast({ 
+        title: "Execution Error", 
+        description: err.message || "Unknown error", 
+        variant: "destructive" 
+      });
+      setIsExecuting(false);
+    }
+  };
+
+  // Verify network settings and contracts
+  const verifyNetworkAndContracts = async () => {
+    setQueueExecuteError("Verifying network settings and contracts...");
+    
+    try {
+      // Check current network
+      const currentChainId = chainId || 0;
+      console.log(`Current chain ID: ${currentChainId}`);
+      
+      if (currentChainId === 0) {
+        throw new Error("Not connected to any network");
+      }
+      
+      if (!governorAddress) {
+        throw new Error("Governor contract address not found for this network");
+      }
+      
+      console.log(`Governor contract address: ${governorAddress}`);
+      
+      // Check if the contract exists on this network
+      const provider = new ethers.providers.JsonRpcProvider(
+        currentChain?.rpcUrls.default.http[0]
+      );
+      
+      // Check contract code
+      const code = await provider.getCode(governorAddress);
+      if (code === '0x') {
+        throw new Error(`No contract exists at address ${governorAddress} on this network!`);
+      }
+      
+      console.log("✅ Governor contract exists on this network");
+      
+      // Try to get the name
+      try {
+        const governor = new ethers.Contract(
+          governorAddress,
+          governorABI,
+          provider
+        );
+        
+        // Try some basic read calls
+        try {
+          const name = await governor.name();
+          console.log(`Governor name: ${name}`);
+        } catch (nameErr) {
+          console.log("Could not get governor name");
+        }
+        
+        try {
+          const proposalCount = await governor.proposalCount();
+          console.log(`Proposal count: ${proposalCount}`);
+        } catch (countErr) {
+          console.log("Could not get proposal count");
+        }
+        
+        // Try to get the timelock address
+        try {
+          const timelock = await governor.timelock();
+          console.log(`Timelock address: ${timelock}`);
+          
+          // Check if timelock contract exists
+          const timelockCode = await provider.getCode(timelock);
+          if (timelockCode === '0x') {
+            console.log(`⚠️ WARNING: No timelock contract exists at ${timelock}`);
+          } else {
+            console.log("✅ Timelock contract exists");
+          }
+        } catch (timelockErr) {
+          console.log("Could not get timelock address");
+        }
+        
+        // Check the proposal state if we have an ID
+        if (id) {
+          try {
+            const state = await governor.state(id);
+            console.log(`✅ PROPOSAL FOUND! State: ${state} (${getProposalState(Number(state))})`);
+            
+            // Try to get proposal snapshot and deadline
+            try {
+              const snapshot = await governor.proposalSnapshot(id);
+              const deadline = await governor.proposalDeadline(id);
+              console.log(`Snapshot: ${snapshot}, Deadline: ${deadline}`);
+            } catch (detailsErr) {
+              console.log("Could not get proposal details");
+            }
+            
+            setQueueExecuteError(
+              `Proposal VERIFIED on-chain! State: ${getProposalState(Number(state))} (${state})`
+            );
+            
+            toast({ 
+              title: "Proposal Verified", 
+              description: `Found on network ${currentChainId} with state: ${getProposalState(Number(state))}`,
+            });
+            
+            return true;
+          } catch (stateErr) {
+            console.error("Error getting proposal state:", stateErr);
+            if (stateErr.message?.includes("unknown proposal id")) {
+              throw new Error(`Proposal ID ${id} does NOT exist on this network!`);
+            }
+            throw stateErr;
+          }
+        }
+        
+        setQueueExecuteError(
+          `Network and contracts verified. Chain: ${currentChainId}, Governor: ${governorAddress}`
+        );
+        
+        toast({ 
+          title: "Verification Complete", 
+          description: "All contracts exist and are accessible",
+        });
+        
+        return true;
+      } catch (contractErr) {
+        console.error("Contract interaction error:", contractErr);
+        throw new Error(`Contract error: ${contractErr.message || String(contractErr)}`);
+      }
+    } catch (err) {
+      console.error("Verification error:", err);
+      setQueueExecuteError(`Verification error: ${err.message || String(err)}`);
+      toast({ 
+        title: "Verification Failed", 
+        description: err.message || "Unknown error", 
+        variant: "destructive" 
+      });
+      return false;
+    }
+  };
+  
+  // Add a completely bare-bones execution attempt
+  const executeBareBones = async () => {
+    try {
+      if (!window.ethereum || !governorAddress || !id || !proposalData) {
+        toast({ 
+          title: "Missing Data", 
+          description: "Required data is missing", 
+          variant: "destructive" 
+        });
+        return;
+      }
+      
+      console.log("Starting BARE BONES execution attempt...");
+      setQueueExecuteError("Attempting bare-bones execution with minimal code...");
+      
+      // Use the raw ID directly from the URL
+      const rawId = id;
+      console.log(`Raw proposal ID: ${rawId}`);
+      
+      // Create minimal contract interface - only the needed function
+      const minimalABI = [
+        {
+          "inputs": [
+            { "internalType": "address[]", "name": "targets", "type": "address[]" },
+            { "internalType": "uint256[]", "name": "values", "type": "uint256[]" },
+            { "internalType": "bytes[]", "name": "calldatas", "type": "bytes[]" },
+            { "internalType": "bytes32", "name": "descriptionHash", "type": "bytes32" }
+          ],
+          "name": "execute",
+          "outputs": [ { "internalType": "uint256", "name": "", "type": "uint256" } ],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        }
+      ];
+      
+      // Get the raw parameters directly from the proposalData
+      const rawTargets = proposalData.targets;
+      const rawValues = proposalData.values.map(v => ethers.BigNumber.from(v));
+      const rawCalldatas = proposalData.calldatas;
+      
+      // Get description hash - try multiple options if needed
+      let descriptionHash;
+      
+      if (proposalData.full_description) {
+        // Option 1: Full description
+        descriptionHash = ethers.utils.id(proposalData.full_description);
+      } else {
+        // Option 2: Title + Description
+        descriptionHash = ethers.utils.id(`${proposalData.title}\n\n${proposalData.description}`);
+      }
+      
+      console.log("BARE BONES parameters:");
+      console.log("- targets:", rawTargets);
+      console.log("- values:", rawValues.map(v => v.toString()));
+      console.log("- calldatas:", rawCalldatas.map(c => `${c.slice(0, 10)}...${c.slice(-8)}`));
+      console.log("- descriptionHash:", descriptionHash);
+      
+      // Connect with minimal code
+      const provider = new ethers.providers.Web3Provider(window.ethereum);
+      await provider.send("eth_requestAccounts", []);
+      const signer = provider.getSigner();
+      const contract = new ethers.Contract(governorAddress, minimalABI, signer);
+      
+      // Call the function directly
+      const tx = await contract.execute(
+        rawTargets, 
+        rawValues, 
+        rawCalldatas, 
+        descriptionHash,
+        {
+          gasLimit: 3000000, 
+          gasPrice: ethers.utils.parseUnits('2', 'gwei')
+        }
+      );
+      
+      console.log("BARE BONES transaction submitted:", tx.hash);
+      setQueueExecuteError(`Transaction submitted: ${tx.hash}`);
+      
+      toast({ 
+        title: "Transaction Submitted", 
+        description: `TX: ${tx.hash.slice(0, 10)}...${tx.hash.slice(-6)}`, 
+      });
+      
+    } catch (err) {
+      console.error("BARE BONES execution error:", err);
+      setQueueExecuteError(`Bare bones error: ${err.message || String(err)}`);
+      toast({ 
+        title: "Execution Failed", 
+        description: err.message || "Unknown error", 
+        variant: "destructive" 
+      });
+    }
+  };
+  
   if (isLoading) return <div>Loading...</div>;
   if (error) return <div>Error: {error}</div>;
   if (!proposalData) return <div>Proposal not found</div>;
@@ -1515,6 +2029,8 @@ const ProposalDetail = ({
            ) : (
              <Button disabled className="w-full">Execute Proposal (Waiting for Timelock)</Button>
            )}
+           
+           {/* Remove all debug UI elements */}
          </div>
        )}
 

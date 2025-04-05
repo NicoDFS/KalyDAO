@@ -648,120 +648,28 @@ const CreateProposal = ({
       setIsSubmitting(true);
       setError(null);
       
-      const formValues = formData;
-      console.log('Submitting form data:', formValues);
-
-      let targets: `0x${string}`[] = [];
-      let values: bigint[] = [];
-      let calldatas: `0x${string}`[] = [];
-
-      // Only process contract interaction fields for Treasury proposals
-      if (formData.category === 'treasury') {
-        targets = formData.actions?.map(action => action.target) as `0x${string}`[] || [];
-        values = formData.actions?.map(action => BigInt(action.value)) || [];
-        calldatas = formData.actions?.map(action => action.calldata) as `0x${string}`[] || [];
+      // Remove dummy values and require at least one action
+      if (formData.actions?.length === 0) {
+        throw new Error("At least one action is required for the proposal");
       }
 
-      // If no treasury actions specified, use a dummy action
-      if (targets.length === 0) {
-        targets = [contracts.governor.address as `0x${string}`];
-        values = [0n];
-        calldatas = ['0x' as `0x${string}`];
-      }
+      // Always use actual proposal parameters
+      const targets = formData.actions?.map(action => action.target) as `0x${string}`[] || [];
+      const values = formData.actions?.map(action => BigInt(action.value)) || [];
+      const calldatas = formData.actions?.map(action => action.calldata) as `0x${string}`[] || [];
 
       // Combine description and fullDescription for on-chain storage
       const fullProposalText = `# ${formData.title}\n\n## Summary\n${formData.summary}\n\n## Description\n${formData.description}\n\n## Full Description\n${formData.fullDescription}`;
 
-      console.log('Creating proposal with:', {
-        targets: targets.map(t => t.toString()),
-        values: values.map(v => v.toString()),
-        calldatas: calldatas.map(c => c.toString()),
-        description: fullProposalText.substring(0, 50) + '...'
-      });
-
-      // Simplified approach without extra parameters
-      if (!writeContract) {
-        throw new Error("WriteContract function not available");
-      }
-
-      if (!address) {
-        throw new Error("Wallet not connected");
-      }
-
-      // Check if MetaMask is detected
-      if (typeof window !== 'undefined' && window.ethereum && window.ethereum.isMetaMask) {
-        console.log('MetaMask is installed and detected');
-      } else {
-        console.warn('MetaMask is not detected - this might be why the popup isn\'t showing');
-      }
-
-      // In some cases MetaMask needs to be "woken up" before making a transaction
-      // Let's try to get the current nonce first
-      const provider = window.ethereum;
-      if (provider && provider.request) {
-        try {
-          console.log('Attempting to wake up MetaMask...');
-          await provider.request({ method: 'eth_requestAccounts' });
-          console.log('Requested accounts to wake up MetaMask');
-          
-          // Also try getting the chain ID to further wake up MetaMask
-          const chainIdHex = await provider.request({ method: 'eth_chainId' });
-          console.log('Current chain ID from provider:', chainIdHex);
-        } catch (e) {
-          console.error('Failed to request accounts:', e);
-        }
-      }
-
-      // Now try the contract write
-      console.log('Submitting transaction...');
-      const config = {
+      // Create proposal with actual parameters
+      writeContract({
         address: contracts.governor.address as `0x${string}`,
         abi: governorAbi,
         functionName: 'propose',
         args: [targets, values, calldatas, fullProposalText],
         account: address,
         chain: currentChain
-      } as any;
-
-      try {
-        console.log('Attempting to send transaction using wagmi writeContract...');
-        
-        // Call writeContract without awaiting - we handle the result in the useEffect hook
-        writeContract(config as any);
-        
-        // The rest of the transaction processing will happen in the useEffect when hash changes
-      } catch (wagmiError) {
-        console.error('Failed to send transaction via wagmi:', wagmiError);
-        setError(`wagmi writeContract failed: ${wagmiError instanceof Error ? wagmiError.message : 'Unknown error'}`);
-        setIsSubmitting(false);
-        
-        // Try fallback method if needed
-        try {
-          console.log('Attempting fallback with direct provider call...');
-          if (window.ethereum && window.ethereum.request) {
-            // Try to wake up MetaMask with a request
-            try {
-              await window.ethereum.request({
-                method: 'eth_requestAccounts'
-              });
-              
-              // Retry the writeContract call after waking MetaMask
-              console.log('Retrying writeContract after MetaMask wake-up...');
-              writeContract(config as any);
-              // Result will be handled by the useEffect hook
-            } catch (metaMaskError) {
-              console.error('Error waking up MetaMask:', metaMaskError);
-              throw metaMaskError;
-            }
-          } else {
-            throw new Error('No Ethereum provider available for fallback');
-          }
-        } catch (providerError) {
-          console.error('Fallback method also failed:', providerError);
-          setError(`Both methods failed. Please try refreshing the page and ensure MetaMask is unlocked.`);
-          setIsSubmitting(false);
-        }
-      }
+      });
     } catch (err) {
       console.error('Failed to create proposal:', err);
       setError(err instanceof Error ? err.message : 'Failed to create proposal');

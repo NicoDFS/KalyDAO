@@ -9,16 +9,15 @@ import { CONTRACT_ADDRESSES_BY_NETWORK } from '@/blockchain/contracts/addresses'
 import { useChainId } from 'wagmi';
 import { ethers } from 'ethers'; // Keep for formatEther
 
-// Assume TreasuryVault has a standard transfer function
-// We might need to get the actual ABI later if it differs
+// Update the ABI to use sendNativeToken instead of transfer
 const treasuryVaultAbi = [
   {
     inputs: [
-      { internalType: 'address', name: 'recipient', type: 'address' },
+      { internalType: 'address payable', name: 'recipient', type: 'address' },
       { internalType: 'uint256', name: 'amount', type: 'uint256' },
     ],
-    name: 'transfer',
-    outputs: [{ internalType: 'bool', name: '', type: 'bool' }],
+    name: 'sendNativeToken',
+    outputs: [],
     stateMutability: 'nonpayable',
     type: 'function',
   },
@@ -60,7 +59,7 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
           const amountInWei = parseEther(amount);
           const calldata = encodeFunctionData({
             abi: treasuryVaultAbi,
-            functionName: 'transfer',
+            functionName: 'sendNativeToken',
             args: [recipient as `0x${string}`, amountInWei],
           });
           field.onChange(calldata); // Update the form field
@@ -68,19 +67,17 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
           // Also update the target and value for this action in the main form
           updateActionFields(actionIndex, {
             target: treasuryVaultAddress, // Target is the vault
-            value: '0',                   // Value is 0 as it's in the calldata
+            value: '0',                   // Value is 0 as we're using calldata
           });
 
         } else {
-          // If inputs invalid, potentially clear calldata or set to '0x'
-           field.onChange('0x'); // Or handle error state
+          field.onChange('0x');
         }
       } catch (error) {
         console.error("Error encoding transfer data:", error);
-         field.onChange('0x'); // Set to empty on error
+        field.onChange('0x');
       }
     }
-    // If actionType is 'custom', the Textarea handles onChange directly
   }, [actionType, recipient, amount, field.onChange, actionIndex, updateActionFields, treasuryVaultAddress]);
 
   // Effect to reset transfer fields if switching away from 'transfer'
@@ -114,7 +111,7 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="custom">Custom Calldata</SelectItem>
-          <SelectItem value="transfer">Transfer KLC (from Treasury)</SelectItem>
+          <SelectItem value="transfer">Transfer KLC (Native Token)</SelectItem>
           {/* Add more action types here later */}
         </SelectContent>
       </Select>
@@ -123,7 +120,7 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
         <Card className="p-4 bg-muted/40">
           <CardContent className="space-y-3 pt-4">
              <p className="text-sm text-muted-foreground mb-2">
-               This will create a proposal action targeting the Treasury Vault ({treasuryVaultAddress ? `${treasuryVaultAddress.substring(0,6)}...${treasuryVaultAddress.substring(38)}` : 'N/A'}) to transfer KLC.
+               This will create a proposal action to transfer native KLC tokens from the Treasury Vault ({treasuryVaultAddress ? `${treasuryVaultAddress.substring(0,6)}...${treasuryVaultAddress.substring(38)}` : 'N/A'}).
              </p>
             <div>
               <Label htmlFor={`${field.name}-recipient`}>Recipient Address</Label>
@@ -133,7 +130,6 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
                 value={recipient}
                 onChange={(e) => setRecipient(e.target.value)}
               />
-              {/* Basic validation feedback */}
               {recipient && !/^0x[a-fA-F0-9]{40}$/.test(recipient) && (
                  <p className="text-xs text-red-500 mt-1">Invalid address format.</p>
               )}
@@ -147,6 +143,7 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 min="0"
+                step="0.000000000000000001" // Allow for wei precision
               />
               {amount && parseFloat(amount) < 0 && (
                   <p className="text-xs text-red-500 mt-1">Amount cannot be negative.</p>
