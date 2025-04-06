@@ -35,7 +35,7 @@ function App() {
                   <Route path="/proposals/:id" element={<ProposalDetail />} />
                   <Route path="/create-proposal" element={<CreateProposal />} />
                   <Route path="/token" element={<TokenDetailPage />} />
-                  <Route path="/wrap" element={<WrapKLC />} />
+                  <Route path="/wrap-klc" element={<WrapKLC />} />
                   <Route path="/test/api" element={<ApiTest />} />
                   <Route path="/delegation" element={<DelegationManager />} />
                 </Route>

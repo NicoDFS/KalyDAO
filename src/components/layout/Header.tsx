@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Home, FileText, PenSquare, Menu, X, Vote } from "lucide-react";
+import { Home, FileText, PenSquare, Menu, X, Vote, Wallet } from "lucide-react";
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 
 const Header = () => {
@@ -29,6 +29,11 @@ const Header = () => {
       path: "/delegation",
       icon: <Vote className="h-4 w-4 mr-2" />,
     },
+    {
+      name: "Wrap KLC",
+      path: "/wrap-klc",
+      icon: <Wallet className="h-4 w-4 mr-2" />,
+    },
   ];
 
   return (
@@ -47,7 +52,7 @@ const Header = () => {
         </Link>
 
         {/* Desktop Navigation */}
-        <nav className="hidden md:flex items-center space-x-4 lg:space-x-6 mx-6">
+        <nav className="hidden md:flex items-center space-x-4 lg:space-x-6 flex-1">
           {navItems.map((item) => (
             <Link
               key={item.name}
@@ -74,7 +79,7 @@ const Header = () => {
         </button>
 
         {/* RainbowKit Connect Button */}
-        <div className="ml-auto md:ml-0">
+        <div className="ml-auto">
           <ConnectButton />
         </div>
       </div>
