@@ -171,6 +171,22 @@ export type ProposalMetadata = {
   metadata?: Record<string, any>;
 };
 
+// New type for vote history
+export type VoteHistoryItem = {
+  id?: string;
+  proposal_id: string;
+  voter_address: string;
+  support: 0 | 1 | 2; // 0=against, 1=for, 2=abstain
+  voting_power: number;
+  reason?: string;
+  transaction_hash: string;
+  block_number: number;
+  timestamp?: string;
+  network_id: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
 // Helper functions for proposals
 export const proposalQueries = {
   async createProposal(data: Omit<ProposalMetadata, 'id' | 'created_at' | 'updated_at'>) {
@@ -239,5 +255,111 @@ export const proposalQueries = {
 
     if (error) throw error;
     return proposal;
+  },
+
+  // New function to record a vote
+  async recordVote(voteData: Omit<VoteHistoryItem, 'id' | 'created_at' | 'updated_at' | 'timestamp'>) {
+    console.log('Recording vote for proposal:', voteData.proposal_id, 'with data:', voteData);
+    
+    try {
+      // Check if this transaction hash already exists
+      const { data: existingVote, error: checkError } = await supabase
+        .from('votes_history')
+        .select('*')
+        .eq('transaction_hash', voteData.transaction_hash)
+        .single();
+        
+      if (checkError && checkError.code !== 'PGRST116') { // PGRST116: No rows found
+        console.error('Error checking for existing vote:', checkError);
+        throw checkError;
+      }
+      
+      // If vote exists, update it, otherwise insert
+      if (existingVote) {
+        console.log('Updating existing vote record with ID:', existingVote.id);
+        const { data: vote, error } = await supabase
+          .from('votes_history')
+          .update({
+            ...voteData,
+            timestamp: new Date().toISOString(),
+          })
+          .eq('transaction_hash', voteData.transaction_hash)
+          .select()
+          .single();
+          
+        if (error) {
+          console.error('Error updating vote record:', error);
+          console.error('Update operation details:', {
+            data: voteData,
+            transaction_hash: voteData.transaction_hash
+          });
+          throw error;
+        }
+        console.log('Vote record updated successfully:', vote);
+        return vote;
+      } else {
+        console.log('Creating new vote record');
+        const { data: vote, error } = await supabase
+          .from('votes_history')
+          .insert({
+            ...voteData,
+            timestamp: new Date().toISOString(),
+          })
+          .select()
+          .single();
+          
+        if (error) {
+          console.error('Error inserting vote record:', error);
+          console.error('Insert operation details:', {
+            data: voteData
+          });
+          throw error;
+        }
+        console.log('Vote record created successfully:', vote);
+        return vote;
+      }
+    } catch (err) {
+      console.error('Unexpected error in recordVote:', err);
+      throw err;
+    }
+  },
+  
+  // New function to get votes for a proposal
+  async getProposalVotes(proposalId: string) {
+    console.log('Fetching votes for proposal:', proposalId);
+    
+    const { data: votes, error } = await supabase
+      .from('votes_history')
+      .select('*')
+      .eq('proposal_id', proposalId)
+      .order('timestamp', { ascending: false });
+      
+    if (error) {
+      console.error('Error fetching votes:', error);
+      throw error;
+    }
+    
+    return votes;
+  },
+  
+  // New function to get a user's vote on a proposal
+  async getUserVote(proposalId: string, userAddress: string) {
+    console.log(`Fetching vote for proposal ${proposalId} by user ${userAddress}`);
+    
+    const { data: vote, error } = await supabase
+      .from('votes_history')
+      .select('*')
+      .eq('proposal_id', proposalId)
+      .eq('voter_address', userAddress.toLowerCase())
+      .order('timestamp', { ascending: false })
+      .limit(1)
+      .single();
+      
+    if (error && error.code !== 'PGRST116') { // PGRST116: No rows found
+      console.error('Error fetching user vote:', error);
+      throw error;
+    }
+    
+    return vote || null;
   }
 }; 

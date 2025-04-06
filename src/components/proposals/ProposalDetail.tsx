@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -8,6 +8,7 @@ import {
   ThumbsDown,
   MinusCircle,
   AlertCircle,
+  Loader2,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { 
@@ -40,8 +41,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { type ProposalMetadata } from '@/lib/supabase';
-import type { ProposalVotes, ProposalState } from '@/blockchain/types';
-import { supabase } from '@/lib/supabase';
+import type { ProposalState } from '@/blockchain/types';
+import { supabase, proposalQueries } from '@/lib/supabase';
 import { useDao } from '@/blockchain/hooks/useDao';
 import { ethers } from 'ethers';
 import { Input } from "@/components/ui/input";
@@ -52,6 +53,23 @@ import { CountdownTimer } from './CountdownTimer';
 import { toast } from "@/components/ui/use-toast";
 import { type Abi, type AbiEvent, decodeEventLog, parseGwei } from 'viem';
 import { type Hash } from 'viem';
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
+
+// Define ProposalVotes interface with data field
+interface ProposalVotes {
+  forVotes: bigint;
+  againstVotes: bigint;
+  abstainVotes: bigint;
+  data?: {
+    hasVoted: boolean;
+    support: number;
+    weight: bigint;
+  };
+}
 
 // ProposalDetail component with simplified execution and queue mechanisms
 // Uses a direct approach with single transactions and enhanced logging
@@ -217,11 +235,14 @@ const ProposalDetail = ({
   const [queueExecuteHash, setQueueExecuteHash] = useState<Hash | undefined>();
   const [voteStatus, setVoteStatus] = useState<string | null>(null);
   const [refetchKey, setRefetchKey] = useState<number>(0);
+  const [voteHistory, setVoteHistory] = useState<any[]>([]);
+  const [isLoadingVotes, setIsLoadingVotes] = useState(false);
   
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { contracts, vote, delegate } = useDao();
   const { data: txHash, error: writeError, isPending: isWritePending, writeContract } = useWriteContract();
+  const { data: receipt } = useWaitForTransactionReceipt({ hash: txHash });
   const currentChain = chainId === 3889 ? kalyChainTestnet : kalyChainMainnet;
   const publicClient = usePublicClient();
 
@@ -1679,6 +1700,98 @@ const ProposalDetail = ({
     }
   };
   
+  // Load vote history from database
+  useEffect(() => {
+    if (id) {
+      const loadVoteHistory = async () => {
+        console.log('Starting to load vote history for proposal:', id);
+        setIsLoadingVotes(true);
+        try {
+          const votes = await proposalQueries.getProposalVotes(id);
+          console.log('Loaded vote history:', votes);
+          setVoteHistory(votes || []);
+        } catch (err) {
+          console.error('Error loading vote history:', err);
+        } finally {
+          setIsLoadingVotes(false);
+          console.log('Finished loading vote history');
+        }
+      };
+      
+      loadVoteHistory();
+    }
+  }, [id, txHash, refetchKey]);
+  
+  // Update the receipt handler to save vote to database
+  useEffect(() => {
+    if (receipt && txHash) {
+      console.log('Vote transaction receipt received:', receipt);
+      console.log('Current votes data:', votes);
+      
+      // Determine the support value from voteDirection since votes.data might not be available
+      const supportValue = voteDirection === 'for' ? 1 : voteDirection === 'against' ? 0 : 2;
+      const votingWeight = userVotingPower; // Use the user's voting power that we already have
+      
+      // Save the vote to the database
+      const saveVote = async () => {
+        try {
+          console.log('Saving vote to database with:', {
+            proposal_id: id,
+            voter_address: address?.toLowerCase(),
+            support: supportValue,
+            voting_power: votingWeight,
+            tx_hash: txHash,
+            reason: voteReason
+          });
+          
+          const voteData = {
+            proposal_id: id as string,
+            voter_address: address?.toLowerCase() as string,
+            support: supportValue as 0 | 1 | 2,
+            voting_power: votingWeight,
+            transaction_hash: txHash as string,
+            block_number: Number(receipt.blockNumber),
+            network_id: chainId,
+            reason: voteReason.trim() || undefined
+          };
+          
+          await proposalQueries.recordVote(voteData);
+          console.log('Vote recorded in database');
+          
+          // Set the user's vote locally
+          setUserVote(voteDirection);
+          
+          // Refresh vote history
+          setRefetchKey(prev => prev + 1);
+        } catch (err) {
+          console.error('Error saving vote to database:', err);
+        }
+      };
+      
+      saveVote();
+    }
+  }, [receipt, txHash, address, id, chainId, voteReason, voteDirection, userVotingPower]);
+  
+  // Helper function to format addresses for display
+  const formatAddress = (address: string) => {
+    if (!address) return '';
+    return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+  };
+  
+  // Helper to get vote type text and color
+  const getVoteTypeInfo = (support: number): { text: string; color: string } => {
+    switch (support) {
+      case 0:
+        return { text: 'AGAINST', color: 'text-red-600' };
+      case 1:
+        return { text: 'FOR', color: 'text-green-600' };
+      case 2:
+        return { text: 'ABSTAIN', color: 'text-gray-600' };
+      default:
+        return { text: 'UNKNOWN', color: 'text-gray-600' };
+    }
+  };
+  
   if (isLoading) return <div>Loading...</div>;
   if (error) return <div>Error: {error}</div>;
   if (!proposalData) return <div>Proposal not found</div>;
@@ -1920,38 +2033,52 @@ const ProposalDetail = ({
         </TabsContent>
         <TabsContent value="history" className="mt-6">
           <div className="space-y-4">
-            <div className="bg-gray-50 p-4 rounded-md">
-              <div className="flex justify-between items-center">
-                <div>
-                  <span className="font-medium">{proposer as string || "Loading..."}</span>
-                  <span className="ml-2 text-green-600 font-medium">
-                    Voted FOR
-                  </span>
-                </div>
-                <span className="text-sm">
-                  {formatVoteNumber(formattedForVotes)} voting power
-                </span>
+            {isLoadingVotes ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
-              <span className="text-xs text-gray-500">
-                {new Date(proposalData?.created_at || "").toLocaleString()}
-              </span>
-            </div>
-            <div className="bg-gray-50 p-4 rounded-md">
-              <div className="flex justify-between items-center">
-                <div>
-                  <span className="font-medium">{proposer as string || "Loading..."}</span>
-                  <span className="ml-2 text-red-600 font-medium">
-                    Voted AGAINST
-                  </span>
-                </div>
-                <span className="text-sm">
-                  {formatVoteNumber(formattedAgainstVotes)} voting power
-                </span>
+            ) : voteHistory.length > 0 ? (
+              voteHistory.map((vote) => {
+                const voteType = getVoteTypeInfo(vote.support);
+                return (
+                  <div key={vote.id} className="bg-gray-50 p-4 rounded-md">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <span className="font-medium">{formatAddress(vote.voter_address)}</span>
+                        <span className={`ml-2 ${voteType.color} font-medium`}>
+                          Voted {voteType.text}
+                        </span>
+                      </div>
+                      <span className="text-sm">
+                        {formatVoteNumber(vote.voting_power)} voting power
+                      </span>
+                    </div>
+                    {vote.reason && (
+                      <p className="text-sm text-gray-700 mt-2">
+                        "{vote.reason}"
+                      </p>
+                    )}
+                    <div className="flex justify-between mt-2">
+                      <span className="text-xs text-gray-500">
+                        {new Date(vote.timestamp).toLocaleString()}
+                      </span>
+                      <a 
+                        href={`${currentChain.blockExplorers?.default.url}/tx/${vote.transaction_hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        View Transaction
+                      </a>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-center py-8">
+                <p className="text-gray-500">No votes have been cast for this proposal yet.</p>
               </div>
-              <span className="text-xs text-gray-500">
-                {new Date(proposalData?.updated_at || "").toLocaleString()}
-              </span>
-            </div>
+            )}
           </div>
         </TabsContent>
         <TabsContent value="discussion" className="mt-6">

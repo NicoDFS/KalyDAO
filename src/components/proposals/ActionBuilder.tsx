@@ -12,7 +12,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // Update action types to match all categories
-type ActionType = 'custom' | 'transfer' | 'governance' | 'protocol' | 'community' | 'technical';
+type ActionType = 'custom' | 'transfer' | 'transfer-erc20' | 'transfer-erc20-batch' | 'governance' | 'protocol' | 'community' | 'technical';
 type ParameterType = 'string' | 'number' | 'boolean';
 
 // ABI for native token transfers
@@ -23,6 +23,28 @@ const treasuryVaultAbi = [
       { internalType: 'uint256', name: 'amount', type: 'uint256' },
     ],
     name: 'sendNativeToken',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  {
+    inputs: [
+      { internalType: 'address', name: 'token', type: 'address' },
+      { internalType: 'address', name: 'recipient', type: 'address' },
+      { internalType: 'uint256', name: 'amount', type: 'uint256' },
+    ],
+    name: 'sendERC20Token',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  {
+    inputs: [
+      { internalType: 'address', name: 'token', type: 'address' },
+      { internalType: 'address[]', name: 'recipients', type: 'address[]' },
+      { internalType: 'uint256[]', name: 'amounts', type: 'uint256[]' },
+    ],
+    name: 'batchSendERC20Token',
     outputs: [],
     stateMutability: 'nonpayable',
     type: 'function',
@@ -215,6 +237,13 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
   const [recipient, setRecipient] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
   
+  // For ERC20 transfer actions
+  const [tokenAddress, setTokenAddress] = useState<string>('');
+  
+  // For batch ERC20 transfer
+  const [recipients, setRecipients] = useState<string>(''); // Comma-separated addresses
+  const [amounts, setAmounts] = useState<string>(''); // Comma-separated amounts
+  
   // For governance actions
   const [governanceFunction, setGovernanceFunction] = useState<string>('');
   
@@ -259,6 +288,56 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
               target: addresses.TREASURY_VAULT,
               value: '0',
             });
+          }
+          break;
+          
+        case 'transfer-erc20':
+          if (tokenAddress && recipient && amount && 
+              /^0x[a-fA-F0-9]{40}$/.test(tokenAddress) && 
+              /^0x[a-fA-F0-9]{40}$/.test(recipient)) {
+            const calldata = encodeFunctionData({
+              abi: treasuryVaultAbi,
+              functionName: 'sendERC20Token',
+              args: [
+                tokenAddress as `0x${string}`, 
+                recipient as `0x${string}`, 
+                parseEther(amount)
+              ],
+            });
+            field.onChange(calldata);
+            updateActionFields(actionIndex, {
+              target: addresses.TREASURY_VAULT,
+              value: '0',
+            });
+          }
+          break;
+          
+        case 'transfer-erc20-batch':
+          if (tokenAddress && recipients && amounts && 
+              /^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
+            // Parse comma-separated lists into arrays
+            const recipientList = recipients.split(',').map(addr => addr.trim()) as `0x${string}`[];
+            const amountList = amounts.split(',').map(amt => parseEther(amt.trim()));
+            
+            // Validate all recipients are valid addresses
+            const allRecipientsValid = recipientList.every(addr => /^0x[a-fA-F0-9]{40}$/.test(addr));
+            
+            if (allRecipientsValid && recipientList.length === amountList.length) {
+              const calldata = encodeFunctionData({
+                abi: treasuryVaultAbi,
+                functionName: 'batchSendERC20Token',
+                args: [
+                  tokenAddress as `0x${string}`,
+                  recipientList,
+                  amountList
+                ],
+              });
+              field.onChange(calldata);
+              updateActionFields(actionIndex, {
+                target: addresses.TREASURY_VAULT,
+                value: '0',
+              });
+            }
           }
           break;
 
@@ -319,7 +398,7 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
       field.onChange('0x');
     }
   }, [
-    actionType, recipient, amount, parameterKey, parameterValue,
+    actionType, tokenAddress, recipient, recipients, amounts, amount, parameterKey, parameterValue,
     parameterType, governanceFunction, field, actionIndex,
     updateActionFields, addresses
   ]);
@@ -334,6 +413,8 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
         <SelectContent>
           <SelectItem value="custom">Custom Calldata</SelectItem>
           <SelectItem value="transfer">Transfer KLC (Native Token)</SelectItem>
+          <SelectItem value="transfer-erc20">Transfer KRC20 Token</SelectItem>
+          <SelectItem value="transfer-erc20-batch">Batch Transfer KRC20 Token</SelectItem>
           <SelectItem value="governance">Governance Settings</SelectItem>
           <SelectItem value="protocol">Protocol Parameter</SelectItem>
           <SelectItem value="community">Community Parameter</SelectItem>
@@ -364,6 +445,92 @@ export const ActionBuilder: React.FC<ActionBuilderProps> = ({ field, actionIndex
                 min="0"
                 step="0.000000000000000001"
               />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {actionType === 'transfer-erc20' && (
+        <Card className="p-4 bg-muted/40">
+          <CardContent className="space-y-3 pt-4">
+            <div>
+              <Label htmlFor={`${field.name}-token-address`}>Token Contract Address</Label>
+              <Input
+                id={`${field.name}-token-address`}
+                placeholder="0x... address of the KRC20 token contract"
+                value={tokenAddress}
+                onChange={(e) => setTokenAddress(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Enter the contract address of the KRC20 token to transfer
+              </p>
+            </div>
+            <div>
+              <Label htmlFor={`${field.name}-recipient-erc20`}>Recipient Address</Label>
+              <Input
+                id={`${field.name}-recipient-erc20`}
+                placeholder="0x... address to receive tokens"
+                value={recipient}
+                onChange={(e) => setRecipient(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor={`${field.name}-amount-erc20`}>Amount (in token units)</Label>
+              <Input
+                id={`${field.name}-amount-erc20`}
+                type="number"
+                placeholder="e.g., 1000"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                min="0"
+                step="0.000000000000000001"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Enter the amount in tokens, not wei (e.g., 1000 for 1000 tokens)
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      
+      {actionType === 'transfer-erc20-batch' && (
+        <Card className="p-4 bg-muted/40">
+          <CardContent className="space-y-3 pt-4">
+            <div>
+              <Label htmlFor={`${field.name}-token-address-batch`}>Token Contract Address</Label>
+              <Input
+                id={`${field.name}-token-address-batch`}
+                placeholder="0x... address of the KRC20 token contract"
+                value={tokenAddress}
+                onChange={(e) => setTokenAddress(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Enter the contract address of the KRC20 token to transfer
+              </p>
+            </div>
+            <div>
+              <Label htmlFor={`${field.name}-recipients-batch`}>Recipient Addresses</Label>
+              <Input
+                id={`${field.name}-recipients-batch`}
+                placeholder="0x1234..., 0x5678..., 0x9abc..."
+                value={recipients}
+                onChange={(e) => setRecipients(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Enter comma-separated list of recipient addresses
+              </p>
+            </div>
+            <div>
+              <Label htmlFor={`${field.name}-amounts-batch`}>Amounts (in token units)</Label>
+              <Input
+                id={`${field.name}-amounts-batch`}
+                placeholder="100, 200, 300"
+                value={amounts}
+                onChange={(e) => setAmounts(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Enter comma-separated list of amounts (must match the number of recipients)
+              </p>
             </div>
           </CardContent>
         </Card>
