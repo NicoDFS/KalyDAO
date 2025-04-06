@@ -11,6 +11,9 @@ import {
   Loader2,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import ReactMarkdown from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
+import remarkGfm from 'remark-gfm';
 import { 
   useAccount, 
   useBalance, 
@@ -1778,7 +1781,7 @@ const ProposalDetail = ({
     return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
   };
   
-  // Helper to get vote type text and color
+  // Get vote type text and color
   const getVoteTypeInfo = (support: number): { text: string; color: string } => {
     switch (support) {
       case 0:
@@ -2027,8 +2030,17 @@ const ProposalDetail = ({
           <TabsTrigger value="discussion">Discussion</TabsTrigger>
         </TabsList>
         <TabsContent value="details" className="mt-6">
-          <div className="prose max-w-none">
-            {proposalData?.description}
+          <div className="prose max-w-none prose-headings:font-bold prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-a:text-blue-600 hover:prose-a:underline prose-img:rounded-md">
+            {proposalData?.full_description ? (
+              <ReactMarkdown 
+                rehypePlugins={[rehypeRaw]} 
+                remarkPlugins={[remarkGfm]}
+              >
+                {proposalData.full_description}
+              </ReactMarkdown>
+            ) : (
+              proposalData?.description
+            )}
           </div>
         </TabsContent>
         <TabsContent value="history" className="mt-6">
