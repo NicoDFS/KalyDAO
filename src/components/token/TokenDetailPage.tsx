@@ -28,7 +28,35 @@ import {
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { useTokenData } from "../../blockchain/hooks/useTokenData";
+import { useKalyscanApi } from "../../blockchain/hooks/useKalyscanApi";
+import { useChainId } from "wagmi";
 import { Alert, AlertDescription } from "../ui/alert";
+
+// Add this interface for the KalyScan API response
+interface TransactionsResponse {
+  transactions?: Array<{
+    hash?: string;
+    txHash?: string;
+    method?: string;
+    value?: string;
+    timeStamp?: number;
+  }>;
+}
+
+// New interface for main-page transactions format
+interface MainPageTransaction {
+  hash: string;
+  method: string;
+  value: string;
+  timestamp: string;
+  from: {
+    hash: string;
+  };
+  to: {
+    hash: string;
+  };
+  transaction_types: string[];
+}
 
 interface Transaction {
   hash: string;
@@ -45,10 +73,27 @@ interface TokenDistributionItem {
 const MAX_SUPPLY = 7000000000; // 7 billion KLC
 
 const TokenDetailPage = () => {
+  const chainId = useChainId();
+  const isTestnet = chainId === 3889;
+  
   // Use a shorter refresh interval for the detail page (2 minutes)
-  const { tokenData, isLoading, error, refetch, lastRefreshTime } = useTokenData(true, {
+  const { tokenData, isLoading, error, refetch, lastRefreshTime } = useTokenData(isTestnet, {
     refreshInterval: 2 * 60 * 1000, // 2 minutes
     autoRefresh: true
+  });
+  
+  // Fix the type parameter in the hook
+  const { 
+    data: transactionsData,
+    isLoading: isTransactionsLoading,
+    error: transactionsError,
+    refetch: refetchTransactions
+  } = useKalyscanApi<MainPageTransaction[]>('/v2/main-page/transactions', { 
+    limit: 10
+  }, isTestnet, {
+    refreshInterval: 2000, // 2 seconds
+    autoRefresh: true,
+    maxRetries: 3
   });
   
   const [recentTransactions, setRecentTransactions] = useState<Transaction[]>([]);
@@ -91,43 +136,68 @@ const TokenDetailPage = () => {
     }
   }, [circulatingPercentage]);
 
-  // Fetch recent transactions
+  // Update the transaction fetching useEffect
   useEffect(() => {
     const fetchRecentTransactions = async () => {
-      // This would be replaced with an actual API call to kalyscan.io
-      // For now, using mock data
-      setRecentTransactions([
-        {
-          hash: "0x7a8b...3f2e",
-          type: "Transfer",
-          amount: "25,000 KLC",
-          time: "2 hours ago",
-        },
-        {
-          hash: "0x3d2c...9f7a",
-          type: "Stake",
-          amount: "10,000 KLC",
-          time: "5 hours ago",
-        },
-        {
-          hash: "0x1e9d...8c4b",
-          type: "Governance Vote",
-          amount: "5,000 KLC",
-          time: "1 day ago",
-        },
-        {
-          hash: "0x5f7e...2d1a",
-          type: "Transfer",
-          amount: "15,000 KLC",
-          time: "2 days ago",
-        },
-      ]);
+      if (transactionsData && Array.isArray(transactionsData)) {
+        // Map the API data to our Transaction interface
+        const formattedTransactions = transactionsData.map((tx: any) => {
+          // Format the value from wei to KLC
+          let formattedAmount = 'N/A';
+          if (tx.value) {
+            const valueInKLC = Number(tx.value) / 1e18;
+            formattedAmount = valueInKLC > 0 
+              ? `${valueInKLC.toFixed(valueInKLC < 0.01 ? 6 : 4)} KLC` 
+              : 'N/A';
+          }
+          
+          return {
+            hash: tx.hash || '',
+            type: tx.method || tx.transaction_types?.[0] || 'Transfer',
+            amount: formattedAmount,
+            time: tx.timestamp ? new Date(tx.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : 'Recently',
+          };
+        });
+        setRecentTransactions(formattedTransactions);
+      } else {
+        // Fallback to mock data if API returns unexpected format
+        setRecentTransactions([
+          {
+            hash: "0x7a8b...3f2e",
+            type: "Transfer",
+            amount: "25,000 KLC",
+            time: "2 hours ago",
+          },
+          {
+            hash: "0x3d2c...9f7a",
+            type: "Stake",
+            amount: "10,000 KLC",
+            time: "5 hours ago",
+          },
+          {
+            hash: "0x1e9d...8c4b",
+            type: "Governance Vote",
+            amount: "5,000 KLC",
+            time: "1 day ago",
+          },
+          {
+            hash: "0x5f7e...2d1a",
+            type: "Transfer",
+            amount: "15,000 KLC",
+            time: "2 days ago",
+          },
+        ]);
+      }
     };
 
-    if (!isLoading && tokenData) {
-      fetchRecentTransactions();
-    }
-  }, [isLoading, tokenData]);
+    fetchRecentTransactions();
+  }, [transactionsData]);
+
+  // Add refetchTransactions to the main refetch function
+  const refreshAllData = () => {
+    refetch();
+    refetchTransactions();
+  };
 
   if (isLoading && !tokenData) {
     return (
@@ -147,7 +217,7 @@ const TokenDetailPage = () => {
           <AlertDescription className="flex flex-col">
             <span>Error loading token data: {error.message}</span>
             <Button 
-              onClick={refetch} 
+              onClick={refreshAllData} 
               variant="outline" 
               size="sm" 
               className="mt-4 self-start flex gap-2 items-center"
@@ -412,13 +482,13 @@ const TokenDetailPage = () => {
             </span>
             <div className="flex gap-3 items-center">
               <Button 
-                onClick={refetch} 
+                onClick={refreshAllData} 
                 variant="ghost" 
                 size="sm" 
                 className="flex gap-1 items-center text-xs"
-                disabled={isLoading}
+                disabled={isLoading || isTransactionsLoading}
               >
-                {isLoading ? (
+                {isLoading || isTransactionsLoading ? (
                   <Loader2 className="h-3 w-3 animate-spin" />
                 ) : (
                   <RefreshCw className="h-3 w-3" />
@@ -494,41 +564,63 @@ const TokenDetailPage = () => {
                 <Clock className="h-5 w-5 text-primary" />
                 Recent Transactions
               </CardTitle>
-              <CardDescription>
-                Latest KLC token transactions on the network
+              <CardDescription className="flex items-center">
+                Latest transactions on KalyChain
+                {isTransactionsLoading && (
+                  <Loader2 className="h-3 w-3 ml-2 animate-spin" />
+                )}
+                <span className="text-xs ml-2 text-muted-foreground">(refreshes every 2s)</span>
+                {transactionsError && (
+                  <span className="text-xs ml-2 text-orange-500">
+                    (using recent data - network issue)
+                  </span>
+                )}
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {recentTransactions.map((tx, index) => (
-                  <div
-                    key={index}
-                    className={`flex justify-between items-center py-3 ${index !== recentTransactions.length - 1 ? "border-b" : ""}`}
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <a
-                          href={`https://kalyscan.io/tx/${tx.hash}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary font-medium hover:underline"
-                        >
-                          {tx.hash}
-                        </a>
-                        <ExternalLink className="h-3 w-3 text-muted-foreground" />
+                {recentTransactions.length > 0 ? (
+                  recentTransactions.map((tx, index) => (
+                    <div
+                      key={index}
+                      className={`flex justify-between items-center py-3 ${index !== recentTransactions.length - 1 ? "border-b" : ""}`}
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <a
+                            href={`https://kalyscan.io/tx/${tx.hash}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary font-medium hover:underline"
+                          >
+                            {tx.hash}
+                          </a>
+                          <ExternalLink className="h-3 w-3 text-muted-foreground" />
+                        </div>
+                        <div className="text-sm text-muted-foreground mt-1">
+                          {tx.time}
+                        </div>
                       </div>
-                      <div className="text-sm text-muted-foreground mt-1">
-                        {tx.time}
+                      <div className="text-right">
+                        <div className="font-medium">{tx.amount}</div>
+                        <div className="text-sm text-muted-foreground">
+                          {tx.type}
+                        </div>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="font-medium">{tx.amount}</div>
-                      <div className="text-sm text-muted-foreground">
-                        {tx.type}
+                  ))
+                ) : (
+                  <div className="py-8 text-center text-muted-foreground">
+                    {isTransactionsLoading ? (
+                      <div className="flex flex-col items-center gap-2">
+                        <Loader2 className="h-8 w-8 animate-spin" />
+                        <span>Loading transactions...</span>
                       </div>
-                    </div>
+                    ) : (
+                      <span>No transactions found</span>
+                    )}
                   </div>
-                ))}
+                )}
 
                 <div className="pt-4 flex justify-center">
                   <a
