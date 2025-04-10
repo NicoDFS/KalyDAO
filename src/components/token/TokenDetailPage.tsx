@@ -569,7 +569,6 @@ const TokenDetailPage = () => {
                 {isTransactionsLoading && (
                   <Loader2 className="h-3 w-3 ml-2 animate-spin" />
                 )}
-                <span className="text-xs ml-2 text-muted-foreground">(refreshes every 2s)</span>
                 {transactionsError && (
                   <span className="text-xs ml-2 text-orange-500">
                     (using recent data - network issue)
