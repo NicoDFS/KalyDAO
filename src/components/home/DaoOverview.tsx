@@ -27,6 +27,7 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { Link } from "react-router-dom";
 
 // Define ABI fragments for reading DAO data
 const governorABI = [
@@ -413,12 +414,12 @@ const DaoOverview = ({
               <strong>Important:</strong> To participate in governance, you need to wrap your KLC tokens to gKLC at a 1:1 ratio. 
               Only gKLC tokens can be used for creating proposals and voting.
             </p>
-            <a href="/wrap-klc">
+            <Link to="/wrap-klc">
               <Button variant="outline" size="sm" className="flex items-center gap-1 mt-1">
                 Wrap KLC to gKLC 
                 <ArrowRight className="h-4 w-4" />
               </Button>
-            </a>
+            </Link>
           </div>
         </div>
       </CardHeader>
