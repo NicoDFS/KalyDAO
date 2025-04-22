@@ -273,6 +273,7 @@ const ProposalsList = ({
                 description={proposal.description || proposal.summary || ""}
                 votesFor={proposal.votesFor}
                 votesAgainst={proposal.votesAgainst}
+                votesAbstain={proposal.votesAbstain}
                 totalVotes={proposal.totalVotes}
                 timeRemaining={proposal.timeRemaining || ""}
                 status={proposal.status}

@@ -222,8 +222,8 @@ const ProposalDetail = ({
 }: ProposalDetailProps) => {
   const { id } = useParams<{ id: string }>();
   const [userVote, setUserVote] = useState<"for" | "against" | "abstain" | null>(null);
+  const [voteDirection, setVoteDirection] = useState<"for" | "against" | "abstain" | null>(null);
   const [showVoteDialog, setShowVoteDialog] = useState(false);
-  const [voteDirection, setVoteDirection] = useState<"for" | "against" | "abstain">("for");
   const [voteReason, setVoteReason] = useState<string>("");
   const [proposalData, setProposalData] = useState<ProposalMetadata & { targets?: string[], values?: string[], calldatas?: string[], full_description?: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -237,9 +237,10 @@ const ProposalDetail = ({
   const [queueExecuteError, setQueueExecuteError] = useState<string | null>(null);
   const [queueExecuteHash, setQueueExecuteHash] = useState<Hash | undefined>();
   const [voteStatus, setVoteStatus] = useState<string | null>(null);
-  const [refetchKey, setRefetchKey] = useState<number>(0);
+  const [refetchKey, setRefetchKey] = useState(0);
   const [voteHistory, setVoteHistory] = useState<any[]>([]);
   const [isLoadingVotes, setIsLoadingVotes] = useState(false);
+  const [dbVoteTotals, setDbVoteTotals] = useState<{ votes_for: number, votes_against: number, votes_abstain: number } | null>(null);
   
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
@@ -380,9 +381,9 @@ const ProposalDetail = ({
   };
 
   // Calculate total votes with proper formatting
-  const formattedForVotes = formatTokenAmount(votes.forVotes);
-  const formattedAgainstVotes = formatTokenAmount(votes.againstVotes);
-  const formattedAbstainVotes = formatTokenAmount(votes.abstainVotes);
+  const formattedForVotes = dbVoteTotals?.votes_for || 0;
+  const formattedAgainstVotes = dbVoteTotals?.votes_against || 0;
+  const formattedAbstainVotes = dbVoteTotals?.votes_abstain || 0;
   const totalVotes = formattedForVotes + formattedAgainstVotes + formattedAbstainVotes;
 
   // Calculate voting percentages
@@ -676,7 +677,9 @@ const ProposalDetail = ({
   };
 
   // Handle vote
-  const handleVote = (direction: "for" | "against" | "abstain") => {
+  const handleVote = async (direction: "for" | "against" | "abstain") => {
+    setUserVote(direction);
+    setVoteDirection(direction);
     console.log(`handleVote called with direction: ${direction}`);
     console.log(`Current isDelegated state: ${isDelegated}`);
     if (!isDelegated) {
@@ -686,7 +689,6 @@ const ProposalDetail = ({
     }
     
     console.log('User is delegated. Showing vote dialog.');
-    setVoteDirection(direction);
     setShowVoteDialog(true);
   };
 
@@ -1758,8 +1760,44 @@ const ProposalDetail = ({
             reason: voteReason.trim() || undefined
           };
           
+          // First, save the individual vote record
           await proposalQueries.recordVote(voteData);
-          console.log('Vote recorded in database');
+          console.log('Vote recorded in votes_history table');
+          
+          // Then, update the main proposal vote counts
+          try {
+            // Get current proposal vote counts
+            const { data: proposal } = await supabase
+              .from('proposals')
+              .select('votes_for, votes_against, votes_abstain')
+              .eq('proposal_id', id)
+              .single();
+            
+            if (proposal) {
+              // Update the appropriate vote count based on vote direction
+              const updates = {
+                votes_for: supportValue === 1 
+                  ? (proposal.votes_for || 0) + votingWeight 
+                  : proposal.votes_for || 0,
+                votes_against: supportValue === 0 
+                  ? (proposal.votes_against || 0) + votingWeight 
+                  : proposal.votes_against || 0,
+                votes_abstain: supportValue === 2 
+                  ? (proposal.votes_abstain || 0) + votingWeight 
+                  : proposal.votes_abstain || 0
+              };
+              
+              // Update the proposal record
+              await supabase
+                .from('proposals')
+                .update(updates)
+                .eq('proposal_id', id);
+                
+              console.log('Updated proposal vote counts in proposals table:', updates);
+            }
+          } catch (updateErr) {
+            console.error('Error updating main proposal vote counts:', updateErr);
+          }
           
           // Set the user's vote locally
           setUserVote(voteDirection);
@@ -1793,6 +1831,97 @@ const ProposalDetail = ({
       default:
         return { text: 'UNKNOWN', color: 'text-gray-600' };
     }
+  };
+  
+  // Add useEffect to fetch vote totals from database
+  useEffect(() => {
+    if (id) {
+      const fetchVoteTotals = async () => {
+        try {
+          const { data: proposal, error } = await supabase
+            .from('proposals')
+            .select('votes_for, votes_against, votes_abstain')
+            .eq('proposal_id', id)
+            .single();
+            
+          if (error) {
+            console.error('Error fetching vote totals:', error);
+            return;
+          }
+          
+          if (proposal) {
+            console.log('Fetched DB vote totals:', proposal);
+            setDbVoteTotals({
+              votes_for: proposal.votes_for || 0,
+              votes_against: proposal.votes_against || 0,
+              votes_abstain: proposal.votes_abstain || 0
+            });
+          }
+        } catch (err) {
+          console.error('Failed to fetch vote totals:', err);
+        }
+      };
+      
+      fetchVoteTotals();
+    }
+  }, [id, refetchKey]); // Add refetchKey to refresh after voting
+
+  // Add useEffect to fetch vote totals from votes_history
+  useEffect(() => {
+    if (id) {
+      const fetchAndUpdateVoteTotals = async () => {
+        try {
+          // First get all votes from votes_history
+          const { data: votes, error: votesError } = await supabase
+            .from('votes_history')
+            .select('*')
+            .eq('proposal_id', id);
+          
+          if (votesError) {
+            console.error('Error fetching votes history:', votesError);
+            return;
+          }
+          
+          console.log('Raw votes from history:', votes);
+          
+          // Calculate totals from votes_history
+          const totals = votes?.reduce((acc, vote) => {
+            if (vote.support === 1) acc.votes_for += vote.voting_power;
+            else if (vote.support === 0) acc.votes_against += vote.voting_power;
+            else if (vote.support === 2) acc.votes_abstain += vote.voting_power;
+            return acc;
+          }, { votes_for: 0, votes_against: 0, votes_abstain: 0 });
+          
+          console.log('Calculated totals from votes_history:', totals);
+          
+          if (totals) {
+            // Update the proposals table with the correct totals
+            const { error: updateError } = await supabase
+              .from('proposals')
+              .update(totals)
+              .eq('proposal_id', id);
+            
+            if (updateError) {
+              console.error('Error updating proposal totals:', updateError);
+              return;
+            }
+            
+            // Update local state
+            setDbVoteTotals(totals);
+          }
+        } catch (err) {
+          console.error('Failed to fetch and update vote totals:', err);
+        }
+      };
+      
+      fetchAndUpdateVoteTotals();
+    }
+  }, [id]); // Only run when id changes
+  
+  // Helper function to display vote type
+  const displayVoteType = (vote: "for" | "against" | "abstain" | null) => {
+    if (!vote) return "";
+    return vote.charAt(0).toUpperCase() + vote.slice(1);
   };
   
   if (isLoading) return <div>Loading...</div>;
@@ -1902,7 +2031,7 @@ const ProposalDetail = ({
                   userVote ? (
                     <div className="bg-gray-50 p-4 rounded-md">
                       <p className="text-sm text-gray-600">
-                        You voted {userVote.toUpperCase()} this proposal with {formatVoteNumber(userVotingPower)} voting power.
+                        You voted {displayVoteType(userVote)} this proposal with {formatVoteNumber(userVotingPower)} voting power.
                       </p>
                     </div>
                   ) : isSubmitting ? (
@@ -1973,14 +2102,12 @@ const ProposalDetail = ({
                 <div className="bg-gray-50 p-4 rounded-md">
                   <p className="text-sm text-gray-600">
                     {userVote ? 
-                      `You voted ${userVote === 'abstain' ? 'ABSTAIN on' : userVote.toUpperCase()} this proposal with ${formatVoteNumber(userVotingPower)} voting power.` :
+                      `You voted ${displayVoteType(userVote)} on this proposal with ${formatVoteNumber(userVotingPower)} voting power.` :
                       userVotingPower <= 0 ?
                         'You need governance tokens to vote on this proposal.' :
                         Number(state) === 0 ?
-                          'This proposal is in the delay period. Voting will start soon.' :
-                          Number(state) === 1 ?
-                            'Voting is active for this proposal.' :
-                            `Voting is ${getProposalState(state || proposalData?.state || 0).toLowerCase()} for this proposal.`
+                          'You can vote on this proposal.' :
+                          'This proposal has ended.'
                     }
                   </p>
                   {Number(state) === 0 && snapshot && currentBlock && (
@@ -2105,7 +2232,7 @@ const ProposalDetail = ({
             <AlertDialogTitle>Confirm Your Vote</AlertDialogTitle>
             <AlertDialogDescription className="space-y-4">
               <div>
-                You are about to vote {voteDirection === 'abstain' ? 'ABSTAIN on' : ` ${voteDirection.toUpperCase()} `} this proposal
+                You are about to vote {voteDirection === 'abstain' ? 'ABSTAIN on' : ` ${voteDirection ? voteDirection.toUpperCase() : ''} `} this proposal
                 with {formatVoteNumber(userVotingPower)} voting power.
               </div>
               <div className="space-y-2">

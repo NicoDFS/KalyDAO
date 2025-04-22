@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { Clock, ThumbsUp, ThumbsDown, Users } from "lucide-react";
+import { Clock, ThumbsUp, ThumbsDown, MinusCircle, Users } from "lucide-react";
 
 import {
   Card,
@@ -19,6 +19,7 @@ interface ProposalCardProps {
   description: string;
   votesFor: number;
   votesAgainst: number;
+  votesAbstain: number;
   totalVotes: number;
   timeRemaining: string;
   status: "active" | "passed" | "failed" | "pending" | "queued" | "executed";
@@ -30,13 +31,15 @@ const ProposalCard = ({
   description = "Proposal to increase the allocation of funds for the developer ecosystem by 5% to attract more builders to KalyChain.",
   votesFor = 1250000,
   votesAgainst = 450000,
+  votesAbstain = 300000,
   totalVotes = 2000000,
   timeRemaining = "2 days 4 hours",
   status = "active",
 }: ProposalCardProps) => {
   // Calculate voting percentages
-  const forPercentage = Math.round((votesFor / totalVotes) * 100);
-  const againstPercentage = Math.round((votesAgainst / totalVotes) * 100);
+  const forPercentage = totalVotes > 0 ? Math.round((votesFor / totalVotes) * 100) : 0;
+  const againstPercentage = totalVotes > 0 ? Math.round((votesAgainst / totalVotes) * 100) : 0;
+  const abstainPercentage = totalVotes > 0 ? Math.round((votesAbstain / totalVotes) * 100) : 0;
 
   // Format vote numbers
   const formatNumber = (num: number) => {
@@ -102,6 +105,18 @@ const ProposalCard = ({
               </div>
             </div>
             <Progress value={forPercentage} className="h-2" />
+            
+            {/* Add abstain votes if present */}
+            {votesAbstain > 0 && (
+              <div className="flex justify-end mt-1 text-sm">
+                <div className="flex items-center gap-1">
+                  <MinusCircle className="h-4 w-4 text-gray-500" />
+                  <span className="text-gray-600">
+                    {formatNumber(votesAbstain)} ({abstainPercentage}%) Abstain
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Time and participation */}
