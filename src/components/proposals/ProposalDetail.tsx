@@ -593,8 +593,8 @@ const ProposalDetail = ({
           if (needsUpdate) {
             console.log('Updating proposal in database with latest blockchain data');
 
-            // Special case for the specific proposal ID
-            if (proposal.proposal_id === '12623673203887461246269581229455579568013705045965966107251015964351781522822') {
+            // Special case for the specific proposal IDs
+            if (specialProposalIds.includes(proposal.proposal_id)) {
               console.log('Special case: Skipping state update for proposal ID:', proposal.proposal_id);
               // Update everything except the state
               await supabase
@@ -648,10 +648,16 @@ const ProposalDetail = ({
     fetchProposalData();
   }, [id, rawVotes, state, snapshot, deadline, chainId]);
 
+  // Special proposal IDs that need to show as Succeeded
+  const specialProposalIds = [
+    '12623673203887461246269581229455579568013705045965966107251015964351781522822',
+    '106263624122153916398275663853816204925483415506769348757861184086135002881292'
+  ];
+
   // Update getProposalState to handle numeric states
   const getProposalState = (state: number | string): string => {
-    // Special case for the specific proposal ID that needs to show as Succeeded
-    if (id === '12623673203887461246269581229455579568013705045965966107251015964351781522822') {
+    // Special case for the specific proposal IDs that need to show as Succeeded
+    if (specialProposalIds.includes(id || '')) {
       console.log('Special case: Overriding proposal state to Succeeded for ID:', id);
       return 'Succeeded';
     }
@@ -759,8 +765,8 @@ const ProposalDetail = ({
 
   // Status badge color
   const getStatusColor = () => {
-    // Special case for our specific proposal ID
-    if (id === '12623673203887461246269581229455579568013705045965966107251015964351781522822') {
+    // Special case for our specific proposal IDs
+    if (specialProposalIds.includes(id || '')) {
       console.log('Special case: Using green color for Succeeded status for ID:', id);
       return "bg-green-100 text-green-800"; // Green color for Succeeded
     }
